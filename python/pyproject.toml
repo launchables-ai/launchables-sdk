@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "launchables"
+dynamic = ["version"]
+description = "Python client for the Launchables Decision API"
+readme = "README.md"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+license = "Apache-2.0"
+dependencies = []
+keywords = ["launchables", "decision", "api", "llm"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "launchables._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+launchables = ["py.typed"]
+
+[project.urls]
+Homepage = "https://www.launchables.ai/docs"
+Documentation = "https://www.launchables.ai/docs"
+Repository = "https://github.com/launchables-ai/launchables-sdk"
+Issues = "https://github.com/launchables-ai/launchables-sdk/issues"

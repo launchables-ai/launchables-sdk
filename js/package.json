@@ -1,0 +1,48 @@
+{
+  "name": "launchables",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript client for the Launchables Decision API",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/client.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "launchables",
+    "decision",
+    "api",
+    "llm"
+  ],
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/launchables-ai/launchables-sdk.git",
+    "directory": "js"
+  },
+  "homepage": "https://www.launchables.ai/docs",
+  "bugs": {
+    "url": "https://github.com/launchables-ai/launchables-sdk/issues"
+  }
+}

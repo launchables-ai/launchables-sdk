@@ -1,0 +1,56 @@
+# Publish both SDKs when a version tag is pushed (git tag v0.1.0 && git push origin v0.1.0).
+# PyPI: trusted publishing (no token) through the "pypi" environment, once the PUBLISH_PYPI variable is true. npm: trusted publishing when it is configured for the
+# package, otherwise the NPM_TOKEN repository secret (needed for the very first publish). Actions pinned to release commits.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  check-versions:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag matches both package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          py=$(grep -E '^__version__' python/src/launchables/_version.py | cut -d'"' -f2)
+          js=$(node -p "require('./js/package.json').version")
+          echo "tag $tag, python $py, js $js"
+          test "$tag" = "$py" && test "$tag" = "$js"
+  pypi:
+    needs: check-versions
+    # Skipped until PyPI is set up: create the pending publisher on pypi.org, then set the repository variable
+    # PUBLISH_PYPI to true (Settings, Secrets and variables, Actions, Variables).
+    if: vars.PUBLISH_PYPI == 'true'
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Build
+        working-directory: python
+        run: uv build
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: python/dist
+  npm:
+    needs: check-versions
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Build, test and publish with provenance
+        working-directory: js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm ci && npm test && npm publish --provenance --access public
