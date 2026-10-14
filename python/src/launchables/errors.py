@@ -18,6 +18,9 @@ class LaunchablesError(Exception):
         self.message = message
         self.status = status
         self.body = body
+        t = body.get("type") if isinstance(body, dict) else None
+        #: The server's error type (e.g. "out_of_credit", "rate_limited"), or None if it sent none.
+        self.type: Optional[str] = t if isinstance(t, str) else None
 
     def __str__(self) -> str:
         if self.status is not None:
@@ -27,6 +30,15 @@ class LaunchablesError(Exception):
 
 class AuthenticationError(LaunchablesError):
     """401: bad or missing token (also raised locally when no key is set)."""
+
+
+class OutOfCreditError(LaunchablesError):
+    """402: no prepaid credit left (``type`` "out_of_credit") or the key's project reached its
+    monthly budget (``type`` "budget_exceeded")."""
+
+
+class PermissionDeniedError(LaunchablesError):
+    """403: the key's project may not use this model (``type`` "model_not_allowed")."""
 
 
 class RateLimitError(LaunchablesError):
@@ -56,6 +68,10 @@ class APIConnectionError(LaunchablesError):
 def error_for_status(status, message, body=None, retry_after=None) -> LaunchablesError:
     if status == 401:
         return AuthenticationError(message, status, body)
+    if status == 402:
+        return OutOfCreditError(message, status, body)
+    if status == 403:
+        return PermissionDeniedError(message, status, body)
     if status == 429:
         return RateLimitError(message, status, body, retry_after)
     if 400 <= status < 500:

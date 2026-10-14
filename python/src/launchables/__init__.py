@@ -8,6 +8,8 @@ from .errors import (
     AuthenticationError,
     InvalidRequestError,
     LaunchablesError,
+    OutOfCreditError,
+    PermissionDeniedError,
     RateLimitError,
     ValidationError,
 )
@@ -25,6 +27,7 @@ __all__ = [
     "__version__", "Launchables", "DEFAULT_BASE_URL",
     "noul", "choice", "score",
     "DecisionResponse", "NoulAnswer", "ChoiceAnswer", "ScoreAnswer", "Usage", "Model",
-    "LaunchablesError", "AuthenticationError", "RateLimitError", "InvalidRequestError",
+    "LaunchablesError", "AuthenticationError", "OutOfCreditError", "PermissionDeniedError",
+    "RateLimitError", "InvalidRequestError",
     "ValidationError", "APIError", "APIConnectionError",
 ]

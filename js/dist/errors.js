@@ -3,11 +3,15 @@ export class LaunchablesError extends Error {
     status;
     /** Parsed JSON body of the error response, or the raw text. */
     body;
+    /** The server's error type (e.g. "out_of_credit", "rate_limited"), or null if it sent none. */
+    type;
     constructor(message, status, body) {
         super(status === undefined ? message : `${message} (HTTP ${status})`);
         this.name = new.target.name;
         this.status = status;
         this.body = body;
+        const t = body?.type;
+        this.type = typeof t === "string" ? t : null;
         this.serverMessage = message;
     }
     /** The message as sent by the server (without the status suffix). */
@@ -15,6 +19,15 @@ export class LaunchablesError extends Error {
 }
 /** 401: bad or missing token (also thrown locally when no key is set). */
 export class AuthenticationError extends LaunchablesError {
+}
+/**
+ * 402: no prepaid credit left (`type` "out_of_credit") or the key's project reached its monthly budget
+ * (`type` "budget_exceeded").
+ */
+export class OutOfCreditError extends LaunchablesError {
+}
+/** 403: the key's project may not use this model (`type` "model_not_allowed"). */
+export class PermissionDeniedError extends LaunchablesError {
 }
 /** 429: rate limit or daily limit reached. */
 export class RateLimitError extends LaunchablesError {
@@ -40,6 +53,10 @@ export class APIConnectionError extends LaunchablesError {
 export function errorForStatus(status, message, body, retryAfter) {
     if (status === 401)
         return new AuthenticationError(message, status, body);
+    if (status === 402)
+        return new OutOfCreditError(message, status, body);
+    if (status === 403)
+        return new PermissionDeniedError(message, status, body);
     if (status === 429)
         return new RateLimitError(message, status, body, retryAfter);
     if (status >= 400 && status < 500)

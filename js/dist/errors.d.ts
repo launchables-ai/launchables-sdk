@@ -3,12 +3,23 @@ export declare class LaunchablesError extends Error {
     readonly status: number | undefined;
     /** Parsed JSON body of the error response, or the raw text. */
     readonly body: unknown;
+    /** The server's error type (e.g. "out_of_credit", "rate_limited"), or null if it sent none. */
+    readonly type: string | null;
     constructor(message: string, status?: number, body?: unknown);
     /** The message as sent by the server (without the status suffix). */
     readonly serverMessage: string;
 }
 /** 401: bad or missing token (also thrown locally when no key is set). */
 export declare class AuthenticationError extends LaunchablesError {
+}
+/**
+ * 402: no prepaid credit left (`type` "out_of_credit") or the key's project reached its monthly budget
+ * (`type` "budget_exceeded").
+ */
+export declare class OutOfCreditError extends LaunchablesError {
+}
+/** 403: the key's project may not use this model (`type` "model_not_allowed"). */
+export declare class PermissionDeniedError extends LaunchablesError {
 }
 /** 429: rate limit or daily limit reached. */
 export declare class RateLimitError extends LaunchablesError {

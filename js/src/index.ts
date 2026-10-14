@@ -4,6 +4,8 @@ export type { Question, Questions, NoulQuestion, ChoiceQuestion, ScoreQuestion }
 export {
   LaunchablesError,
   AuthenticationError,
+  OutOfCreditError,
+  PermissionDeniedError,
   RateLimitError,
   InvalidRequestError,
   ValidationError,

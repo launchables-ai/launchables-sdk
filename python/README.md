@@ -59,21 +59,25 @@ client.health()   # {"status": "ok"}
 
 ## Error handling
 
-All errors derive from `LaunchablesError` and carry `.status` and `.message` (the server's message).
+All errors derive from `LaunchablesError` and carry `.status`, `.message` (the server's message), `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `None` if it sent none).
 
 | Error | When |
 | --- | --- |
 | `AuthenticationError` | 401, or no key given or found |
+| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's project has reached its monthly budget (`.type` `"budget_exceeded"`) |
+| `PermissionDeniedError` | 403: the key's project may not use this model (`.type` `"model_not_allowed"`) |
 | `RateLimitError` | 429 (`.retry_after` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |
 
 ```python
-from launchables import RateLimitError, InvalidRequestError, LaunchablesError
+from launchables import OutOfCreditError, RateLimitError, InvalidRequestError, LaunchablesError
 
 try:
     resp = client.decide(state, questions)
+except OutOfCreditError as e:
+    print("project budget reached" if e.type == "budget_exceeded" else "top up credit")
 except RateLimitError as e:
     print("slow down", e.retry_after)
 except InvalidRequestError as e:
@@ -84,7 +88,7 @@ except LaunchablesError as e:
 
 ## Retries
 
-429, 502, 503 and connection errors are retried up to `max_retries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors are raised immediately. `timeout` (seconds, default 30) applies to each attempt.
+429, 502, 503 and connection errors are retried up to `max_retries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors, including 402 and 403, are raised immediately. `timeout` (seconds, default 30) applies to each attempt.
 
 ```python
 client = Launchables(api_key="launchables_...", timeout=10, max_retries=5)

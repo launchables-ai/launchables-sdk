@@ -8,7 +8,8 @@ from unittest import mock
 import launchables
 from launchables import (
     APIConnectionError, APIError, AuthenticationError, InvalidRequestError,
-    Launchables, LaunchablesError, RateLimitError, ValidationError,
+    Launchables, LaunchablesError, OutOfCreditError, PermissionDeniedError,
+    RateLimitError, ValidationError,
     choice, noul, score,
 )
 from launchables import client as client_module
@@ -160,9 +161,29 @@ class ErrorTests(Base):
         self.assertEqual(e.status, status)
         self.assertIn(f"boom {status}", e.message)
         self.assertIsInstance(e, LaunchablesError)
+        self.assertIsNone(e.type)
         self.assertEqual(len(self.server.requests), 4 if retried else 1)
 
+    def check_typed(self, status, cls, type_):
+        for _ in range(5):
+            self.reply(status, {"error": f"no: {type_}", "type": type_})
+        with self.assertRaises(cls) as cm:
+            self.ask()
+        e = cm.exception
+        self.assertIsInstance(e, LaunchablesError)
+        self.assertEqual(e.status, status)
+        self.assertEqual(e.type, type_)
+        self.assertEqual(e.message, f"no: {type_}")
+        self.assertEqual(e.body, {"error": f"no: {type_}", "type": type_})
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual(self.sleeps, [])
+
     def test_401(self): self.check(401, AuthenticationError)
+    def test_402(self): self.check(402, OutOfCreditError)
+    def test_403(self): self.check(403, PermissionDeniedError)
+    def test_402_out_of_credit(self): self.check_typed(402, OutOfCreditError, "out_of_credit")
+    def test_402_budget_exceeded(self): self.check_typed(402, OutOfCreditError, "budget_exceeded")
+    def test_403_model_not_allowed(self): self.check_typed(403, PermissionDeniedError, "model_not_allowed")
     def test_400(self): self.check(400, InvalidRequestError)
     def test_404(self): self.check(404, InvalidRequestError)
     def test_411(self): self.check(411, InvalidRequestError)
@@ -178,6 +199,23 @@ class ErrorTests(Base):
         with self.assertRaises(InvalidRequestError) as cm:
             self.ask()
         self.assertEqual(cm.exception.message, "plain text failure")
+        self.assertIsNone(cm.exception.type)
+
+    def test_type_on_other_errors(self):
+        self.reply(401, {"error": "bad key", "type": "invalid_api_key"})
+        with self.assertRaises(AuthenticationError) as cm:
+            self.ask()
+        self.assertEqual(cm.exception.type, "invalid_api_key")
+        c = Launchables(api_key="k", base_url=self.server.url, max_retries=0)
+        self.reply(429, {"error": "slow", "type": "rate_limited"})
+        with self.assertRaises(RateLimitError) as cm:
+            c.decide("s", {"q": noul("x")})
+        self.assertEqual(cm.exception.type, "rate_limited")
+        self.reply(400, {"error": "bad", "type": 7})
+        with self.assertRaises(InvalidRequestError) as cm:
+            self.ask()
+        self.assertIsNone(cm.exception.type)
+        self.assertIsNone(LaunchablesError("local").type)
 
 
 class RetryTests(Base):
