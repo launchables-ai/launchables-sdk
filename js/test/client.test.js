@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   Launchables, noul, choice, score, NoulAnswer, VERSION,
-  LaunchablesError, AuthenticationError, RateLimitError, InvalidRequestError,
-  ValidationError, APIError, APIConnectionError,
+  LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError,
+  InvalidRequestError, ValidationError, APIError, APIConnectionError,
 } from "../dist/index.js";
 
 const NOUL = { type: "noul", noul: 0.04 };
@@ -103,7 +103,7 @@ test("env var token, explicit key wins", async () => {
 });
 
 const cases = [
-  [401, AuthenticationError, false], [400, InvalidRequestError, false], [404, InvalidRequestError, false],
+  [401, AuthenticationError, false], [402, OutOfCreditError, false], [403, PermissionDeniedError, false], [400, InvalidRequestError, false], [404, InvalidRequestError, false],
   [411, InvalidRequestError, false], [413, InvalidRequestError, false], [422, InvalidRequestError, false],
   [429, RateLimitError, true], [502, APIError, true], [503, APIError, true], [500, APIError, false],
 ];
@@ -116,11 +116,44 @@ for (const [status, cls, retried] of cases) {
       assert.equal(e.status, status);
       assert.equal(e.serverMessage, `boom ${status}`);
       assert.match(e.message, new RegExp(`boom ${status}`));
+      assert.equal(e.type, null);
       return true;
     });
     assert.equal(calls.length, retried ? 4 : 1);
   });
 }
+
+for (const [status, cls, type] of [
+  [402, OutOfCreditError, "out_of_credit"], [402, OutOfCreditError, "budget_exceeded"],
+  [403, PermissionDeniedError, "model_not_allowed"],
+]) {
+  test(`HTTP ${status} ${type} -> ${cls.name}, not retried`, async () => {
+    const { client, calls, sleeps } = setup(Array.from({ length: 5 }, () => [status, { error: `no: ${type}`, type }]));
+    await assert.rejects(ask(client), (e) => {
+      assert.ok(e instanceof cls);
+      assert.ok(e instanceof LaunchablesError);
+      assert.equal(e.status, status);
+      assert.equal(e.type, type);
+      assert.equal(e.serverMessage, `no: ${type}`);
+      assert.deepEqual(e.body, { error: `no: ${type}`, type });
+      return true;
+    });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(sleeps, []);
+  });
+}
+
+test("type exposed on other errors when sent", async () => {
+  const a = setup([[401, { error: "bad key", type: "invalid_api_key" }]]);
+  await assert.rejects(ask(a.client), (e) => e instanceof AuthenticationError && e.type === "invalid_api_key");
+  const b = setup([[429, { error: "slow", type: "rate_limited" }]], { maxRetries: 0 });
+  await assert.rejects(ask(b.client), (e) => e instanceof RateLimitError && e.type === "rate_limited");
+  const c = setup([[422, "plain failure"]]);
+  await assert.rejects(ask(c.client), (e) => e instanceof InvalidRequestError && e.type === null);
+  const d = setup([[400, { error: "bad", type: 7 }]]);
+  await assert.rejects(ask(d.client), (e) => e instanceof InvalidRequestError && e.type === null);
+  assert.equal(new LaunchablesError("local").type, null);
+});
 
 test("non-JSON error body", async () => {
   const { client } = setup([[422, "plain failure"]]);

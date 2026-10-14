@@ -58,23 +58,26 @@ await client.health(); // { status: "ok" }
 
 ## Error handling
 
-All errors extend `LaunchablesError` and carry `.status`, `.serverMessage` and `.body`.
+All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `null` if it sent none).
 
 | Error | When |
 | --- | --- |
 | `AuthenticationError` | 401, or no key given or found |
+| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's workspace has reached its monthly budget (`.type` `"budget_exceeded"`) |
+| `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`) |
 | `RateLimitError` | 429 (`.retryAfter` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |
 
 ```ts
-import { RateLimitError, InvalidRequestError, LaunchablesError } from "launchables";
+import { OutOfCreditError, RateLimitError, InvalidRequestError, LaunchablesError } from "launchables";
 
 try {
   await client.decide(state, questions);
 } catch (e) {
-  if (e instanceof RateLimitError) console.log("slow down", e.retryAfter);
+  if (e instanceof OutOfCreditError) console.log(e.type === "budget_exceeded" ? "workspace budget reached" : "top up credit");
+  else if (e instanceof RateLimitError) console.log("slow down", e.retryAfter);
   else if (e instanceof InvalidRequestError) console.log(e.status, e.serverMessage);
   else if (e instanceof LaunchablesError) console.log("failed:", e.message);
   else throw e;
@@ -83,7 +86,7 @@ try {
 
 ## Retries
 
-429, 502, 503 and connection errors are retried up to `maxRetries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors are thrown immediately. `timeout` is in milliseconds (default 30000) and applies to each attempt.
+429, 502, 503 and connection errors are retried up to `maxRetries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors, including 402 and 403, are thrown immediately. `timeout` is in milliseconds (default 30000) and applies to each attempt.
 
 ```ts
 const client = new Launchables({ apiKey: "launchables_...", timeout: 10_000, maxRetries: 5 });
