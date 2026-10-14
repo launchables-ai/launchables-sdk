@@ -1,6 +1,7 @@
 # Publish both SDKs when a version tag is pushed (git tag v0.1.0 && git push origin v0.1.0).
-# PyPI: trusted publishing (no token) through the "pypi" environment, once the PUBLISH_PYPI variable is true. npm: trusted publishing when it is configured for the
-# package, otherwise the NPM_TOKEN repository secret (needed for the very first publish). Actions pinned to release commits.
+# PyPI: trusted publishing (no token) through the "pypi" environment, once the PUBLISH_PYPI variable is true. npm: trusted
+# publishing (no token) through the "npm" environment, which may only stage a release: it goes live when Charlie approves
+# it on npmjs.com (Staged Packages), with his two-factor check. Actions pinned to release commits.
 name: Release
 on:
   push:
@@ -49,8 +50,7 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-      - name: Build, test and publish with provenance
+      - name: Build, test and stage with provenance
         working-directory: js
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm ci && npm test && npm publish --provenance --access public
+        # npm 12.2.0 for "npm stage publish"; it signs in to npm through GitHub's OIDC token (trusted publishing)
+        run: npm ci && npm test && npx --yes npm@12.2.0 stage publish --provenance --access public
