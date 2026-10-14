@@ -24,12 +24,12 @@ export class LaunchablesError extends Error {
 export class AuthenticationError extends LaunchablesError {}
 
 /**
- * 402: no prepaid credit left (`type` "out_of_credit") or the key's project reached its monthly budget
+ * 402: no prepaid credit left (`type` "out_of_credit") or the key's workspace has reached its monthly budget
  * (`type` "budget_exceeded").
  */
 export class OutOfCreditError extends LaunchablesError {}
 
-/** 403: the key's project may not use this model (`type` "model_not_allowed"). */
+/** 403: the key's workspace may not use this model (`type` "model_not_allowed"). */
 export class PermissionDeniedError extends LaunchablesError {}
 
 /** 429: rate limit or daily limit reached. */

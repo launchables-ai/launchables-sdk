@@ -64,8 +64,8 @@ All errors derive from `LaunchablesError` and carry `.status`, `.message` (the s
 | Error | When |
 | --- | --- |
 | `AuthenticationError` | 401, or no key given or found |
-| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's project has reached its monthly budget (`.type` `"budget_exceeded"`) |
-| `PermissionDeniedError` | 403: the key's project may not use this model (`.type` `"model_not_allowed"`) |
+| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's workspace has reached its monthly budget (`.type` `"budget_exceeded"`) |
+| `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`) |
 | `RateLimitError` | 429 (`.retry_after` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
 | `APIError` | 5xx |
@@ -77,7 +77,7 @@ from launchables import OutOfCreditError, RateLimitError, InvalidRequestError, L
 try:
     resp = client.decide(state, questions)
 except OutOfCreditError as e:
-    print("project budget reached" if e.type == "budget_exceeded" else "top up credit")
+    print("workspace budget reached" if e.type == "budget_exceeded" else "top up credit")
 except RateLimitError as e:
     print("slow down", e.retry_after)
 except InvalidRequestError as e:

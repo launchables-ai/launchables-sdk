@@ -63,8 +63,8 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 | Error | When |
 | --- | --- |
 | `AuthenticationError` | 401, or no key given or found |
-| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's project has reached its monthly budget (`.type` `"budget_exceeded"`) |
-| `PermissionDeniedError` | 403: the key's project may not use this model (`.type` `"model_not_allowed"`) |
+| `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's workspace has reached its monthly budget (`.type` `"budget_exceeded"`) |
+| `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`) |
 | `RateLimitError` | 429 (`.retryAfter` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
 | `APIError` | 5xx |
@@ -76,7 +76,7 @@ import { OutOfCreditError, RateLimitError, InvalidRequestError, LaunchablesError
 try {
   await client.decide(state, questions);
 } catch (e) {
-  if (e instanceof OutOfCreditError) console.log(e.type === "budget_exceeded" ? "project budget reached" : "top up credit");
+  if (e instanceof OutOfCreditError) console.log(e.type === "budget_exceeded" ? "workspace budget reached" : "top up credit");
   else if (e instanceof RateLimitError) console.log("slow down", e.retryAfter);
   else if (e instanceof InvalidRequestError) console.log(e.status, e.serverMessage);
   else if (e instanceof LaunchablesError) console.log("failed:", e.message);

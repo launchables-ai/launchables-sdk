@@ -33,12 +33,12 @@ class AuthenticationError(LaunchablesError):
 
 
 class OutOfCreditError(LaunchablesError):
-    """402: no prepaid credit left (``type`` "out_of_credit") or the key's project reached its
+    """402: no prepaid credit left (``type`` "out_of_credit") or the key's workspace has reached its
     monthly budget (``type`` "budget_exceeded")."""
 
 
 class PermissionDeniedError(LaunchablesError):
-    """403: the key's project may not use this model (``type`` "model_not_allowed")."""
+    """403: the key's workspace may not use this model (``type`` "model_not_allowed")."""
 
 
 class RateLimitError(LaunchablesError):
