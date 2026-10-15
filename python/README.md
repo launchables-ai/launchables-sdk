@@ -63,7 +63,7 @@ Every API key expires. The client reads the expiry date from each response, so y
 
 ```python
 def on_expiry(expiry):
-    # called once per client when 14 days or fewer are left: alert your team, or start a rotation job
+    # called once per key and expiry date when 14 days or fewer are left: alert your team, or start a rotation job
     alert_team(f"Launchables key {expiry.key_id} expires on {expiry.expires_on} ({expiry.days_left} days left)")
 
 client = Launchables(on_key_expiry=on_expiry)

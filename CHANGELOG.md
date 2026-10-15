@@ -4,7 +4,7 @@
 
 - `key()` returns the calling key's details: id, name, expiry date and days left, rate and daily limits, and whether it is paused (with the reason). It counts as no request and no tokens.
 - Every response's `Launchables-Key-Expires` header is read; the last value is on the client (`keyExpiry` in JavaScript, `key_expiry` in Python).
-- `onKeyExpiry` (JavaScript) and `on_key_expiry` (Python) are called once per client when 14 days or fewer are left. Without one, the client writes one console warning (JavaScript) or issues one `KeyExpiryWarning` (Python).
+- `onKeyExpiry` (JavaScript) and `on_key_expiry` (Python) are called once per key and expiry date when 14 days or fewer are left. Without one, the client writes one console warning (JavaScript) or issues one `KeyExpiryWarning` (Python).
 - `models()` sends the API key when one is set, so it also reports the key's expiry. It still works without a key.
 
 ## 0.1.1

@@ -19,7 +19,7 @@ export interface LaunchablesOptions {
     /** Allow constructing the client in a browser. Do not do this with a real key. */
     dangerouslyAllowBrowser?: boolean;
     /**
-     * Called once per client when a response shows the key has 14 days or fewer left, so you can rotate it on time
+     * Called once per key and expiry date when a response shows the key has 14 days or fewer left, so you can rotate it on time
      * (for example, alert your team or start a rotation job). Without it, the client writes one console warning instead.
      */
     onKeyExpiry?: (expiry: KeyExpiry) => void | Promise<void>;
@@ -32,7 +32,7 @@ export declare class Launchables {
     private readonly fetchImpl;
     private readonly sleep;
     private readonly onKeyExpiry;
-    private warnedExpiry;
+    private warnedFor;
     /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
     keyExpiry: KeyExpiry | undefined;
     constructor(options?: LaunchablesOptions);

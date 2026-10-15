@@ -71,7 +71,7 @@ class Launchables:
         max_retries: int = 3,
         on_key_expiry: Optional[Callable[[KeyExpiry], None]] = None,
     ) -> None:
-        """``on_key_expiry`` is called once per client when a response shows the key has 14 days or fewer left, so you can
+        """``on_key_expiry`` is called once per key and expiry date when a response shows the key has 14 days or fewer left, so you can
         rotate it on time; without it, the client issues one ``KeyExpiryWarning`` instead."""
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
@@ -81,7 +81,7 @@ class Launchables:
         self.max_retries = max_retries
         self.on_key_expiry = on_key_expiry
         self.key_expiry: Optional[KeyExpiry] = None  # the key's expiry as last seen in a response
-        self._warned_expiry = False
+        self._warned_for: Optional[str] = None  # the key and expiry last warned about: once per key and date
 
     # -- public API --------------------------------------------------------
 
@@ -137,9 +137,10 @@ class Launchables:
         if days is None:
             return
         self.key_expiry = KeyExpiry(key_id=headers.get("Launchables-Key-Id"), expires_on=expires, days_left=days)
-        if days > KEY_EXPIRY_WARNING_DAYS or self._warned_expiry:
+        which = f"{self.key_expiry.key_id or ''}|{expires}"
+        if days > KEY_EXPIRY_WARNING_DAYS or self._warned_for == which:
             return
-        self._warned_expiry = True
+        self._warned_for = which
         try:
             if self.on_key_expiry is not None:
                 self.on_key_expiry(self.key_expiry)

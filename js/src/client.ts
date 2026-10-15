@@ -32,7 +32,7 @@ export interface LaunchablesOptions {
   /** Allow constructing the client in a browser. Do not do this with a real key. */
   dangerouslyAllowBrowser?: boolean;
   /**
-   * Called once per client when a response shows the key has 14 days or fewer left, so you can rotate it on time
+   * Called once per key and expiry date when a response shows the key has 14 days or fewer left, so you can rotate it on time
    * (for example, alert your team or start a rotation job). Without it, the client writes one console warning instead.
    */
   onKeyExpiry?: (expiry: KeyExpiry) => void | Promise<void>;
@@ -61,7 +61,7 @@ export class Launchables {
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly onKeyExpiry: ((expiry: KeyExpiry) => void | Promise<void>) | undefined;
-  private warnedExpiry = false;
+  private warnedFor: string | undefined; // the key and expiry last warned about: once per key and date
   /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
   keyExpiry: KeyExpiry | undefined;
 
@@ -130,8 +130,9 @@ export class Launchables {
     const days = daysUntil(expires);
     if (days === undefined) return;
     this.keyExpiry = { key_id: headers.get("Launchables-Key-Id"), expires_on: expires, days_left: days };
-    if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedExpiry) return;
-    this.warnedExpiry = true;
+    const which = `${this.keyExpiry.key_id ?? ""}|${expires}`;
+    if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedFor === which) return;
+    this.warnedFor = which;
     try {
       if (this.onKeyExpiry) {
         const result = this.onKeyExpiry({ ...this.keyExpiry });

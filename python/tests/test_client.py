@@ -208,6 +208,14 @@ class KeyExpiryTests(Base):
         r = self.server.requests[0]
         self.assertEqual((r["method"], r["path"], r["headers"]["Authorization"]), ("GET", "/v1/key", "Bearer launchables_test"))
 
+    def test_a_new_key_on_the_same_client_warns_again(self):
+        seen = []
+        c = Launchables(api_key="launchables_test", base_url=self.server.url, on_key_expiry=lambda e: seen.append(e.key_id))
+        for kid, days in (("c_1", 5), ("c_2", 9), ("c_2", 9)):
+            self.reply(200, {"model": "m", "answers": {"q": NOUL}}, {"Launchables-Key-Id": kid, "Launchables-Key-Expires": self.in_days(days)})
+            c.decide("s", {"q": noul("x")})
+        self.assertEqual(seen, ["c_1", "c_2"])
+
     def test_key_needs_an_api_key(self):
         with self.assertRaises(AuthenticationError):
             Launchables(base_url=self.server.url).key()

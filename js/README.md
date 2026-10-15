@@ -63,7 +63,7 @@ Every API key expires. The client reads the expiry date from each response, so y
 ```ts
 const client = new Launchables({
   onKeyExpiry: ({ key_id, expires_on, days_left }) => {
-    // called once per client when 14 days or fewer are left: alert your team, or start a rotation job
+    // called once per key and expiry date when 14 days or fewer are left: alert your team, or start a rotation job
     alertTeam(`Launchables key ${key_id} expires on ${expires_on} (${days_left} days left)`);
   },
 });

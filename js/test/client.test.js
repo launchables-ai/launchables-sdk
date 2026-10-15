@@ -306,3 +306,14 @@ test("an async callback that rejects is swallowed, not an unhandled rejection", 
   } finally { process.off("unhandledRejection", onUnhandled); }
   assert.equal(unhandled, 0);
 });
+
+test("a new key (or a new expiry date) on the same client warns again", async () => {
+  const seen = [];
+  const { client } = setup([
+    [200, OK, { "Launchables-Key-Id": "c_1", "Launchables-Key-Expires": inDays(5) }],
+    [200, OK, { "Launchables-Key-Id": "c_2", "Launchables-Key-Expires": inDays(9) }],
+    [200, OK, { "Launchables-Key-Id": "c_2", "Launchables-Key-Expires": inDays(9) }],
+  ], { onKeyExpiry: (e) => seen.push(e.key_id) });
+  await ask(client); await ask(client); await ask(client);
+  assert.deepEqual(seen, ["c_1", "c_2"]);
+});
