@@ -294,3 +294,15 @@ test("key() needs an API key", async () => {
     await assert.rejects(client.key(), AuthenticationError);
   } finally { if (saved !== undefined) process.env.LAUNCHABLES_API_TOKEN = saved; }
 });
+
+test("an async callback that rejects is swallowed, not an unhandled rejection", async () => {
+  let unhandled = 0;
+  const onUnhandled = () => { unhandled++; };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const { client } = setup([[200, OK, { "Launchables-Key-Expires": inDays(1) }]], { onKeyExpiry: async () => { throw new Error("boom"); } });
+    await ask(client);
+    await new Promise((r) => setTimeout(r, 20));
+  } finally { process.off("unhandledRejection", onUnhandled); }
+  assert.equal(unhandled, 0);
+});

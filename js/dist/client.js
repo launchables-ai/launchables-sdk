@@ -95,8 +95,12 @@ export class Launchables {
             return;
         this.warnedExpiry = true;
         try {
-            if (this.onKeyExpiry)
-                this.onKeyExpiry({ ...this.keyExpiry });
+            if (this.onKeyExpiry) {
+                const result = this.onKeyExpiry({ ...this.keyExpiry });
+                // an async callback that rejects is swallowed too, so it cannot become an unhandled rejection
+                if (result && typeof result.catch === "function")
+                    result.catch(() => { });
+            }
             else
                 console.warn(`Launchables: API key ${this.keyExpiry.key_id ?? ""} expires on ${expires} (${days} day${days === 1 ? "" : "s"} left). Roll it in the console to replace it without downtime.`);
         }

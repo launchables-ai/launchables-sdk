@@ -22,7 +22,7 @@ export interface LaunchablesOptions {
      * Called once per client when a response shows the key has 14 days or fewer left, so you can rotate it on time
      * (for example, alert your team or start a rotation job). Without it, the client writes one console warning instead.
      */
-    onKeyExpiry?: (expiry: KeyExpiry) => void;
+    onKeyExpiry?: (expiry: KeyExpiry) => void | Promise<void>;
 }
 export declare class Launchables {
     readonly baseURL: string;

@@ -35,7 +35,7 @@ export interface LaunchablesOptions {
    * Called once per client when a response shows the key has 14 days or fewer left, so you can rotate it on time
    * (for example, alert your team or start a rotation job). Without it, the client writes one console warning instead.
    */
-  onKeyExpiry?: (expiry: KeyExpiry) => void;
+  onKeyExpiry?: (expiry: KeyExpiry) => void | Promise<void>;
 }
 
 /** Whole days from today (UTC) to a YYYY-MM-DD date, or undefined if it is not one. */
@@ -60,7 +60,7 @@ export class Launchables {
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly onKeyExpiry: ((expiry: KeyExpiry) => void) | undefined;
+  private readonly onKeyExpiry: ((expiry: KeyExpiry) => void | Promise<void>) | undefined;
   private warnedExpiry = false;
   /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
   keyExpiry: KeyExpiry | undefined;
@@ -133,8 +133,11 @@ export class Launchables {
     if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedExpiry) return;
     this.warnedExpiry = true;
     try {
-      if (this.onKeyExpiry) this.onKeyExpiry({ ...this.keyExpiry });
-      else console.warn(`Launchables: API key ${this.keyExpiry.key_id ?? ""} expires on ${expires} (${days} day${days === 1 ? "" : "s"} left). Roll it in the console to replace it without downtime.`);
+      if (this.onKeyExpiry) {
+        const result = this.onKeyExpiry({ ...this.keyExpiry });
+        // an async callback that rejects is swallowed too, so it cannot become an unhandled rejection
+        if (result && typeof (result as Promise<void>).catch === "function") (result as Promise<void>).catch(() => {});
+      } else console.warn(`Launchables: API key ${this.keyExpiry.key_id ?? ""} expires on ${expires} (${days} day${days === 1 ? "" : "s"} left). Roll it in the console to replace it without downtime.`);
     } catch {
       // a failing callback must never break the request it rode on
     }
