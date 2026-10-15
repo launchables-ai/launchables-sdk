@@ -1,4 +1,4 @@
-export { Launchables, DEFAULT_BASE_URL, KEY_EXPIRY_WARNING_DAYS, type LaunchablesOptions } from "./client.js";
+export { Launchables, DEFAULT_BASE_URL, DEFAULT_ADMIN_BASE_URL, KEY_EXPIRY_WARNING_DAYS, type LaunchablesOptions } from "./client.js";
 export { noul, choice, score } from "./questions.js";
 export type { Question, Questions, NoulQuestion, ChoiceQuestion, ScoreQuestion } from "./questions.js";
 export {
@@ -8,6 +8,8 @@ export {
   PermissionDeniedError,
   RateLimitError,
   InvalidRequestError,
+  NotFoundError,
+  ConflictError,
   ValidationError,
   APIError,
   APIConnectionError,
@@ -25,4 +27,6 @@ export type {
   Model,
   Usage,
 } from "./types.js";
+export { AdminKeys } from "./admin.js";
+export type { ManagedKey, KeyPage, CreatedKey, RolledKey, RevokedKey, CreateKeyParams, ListKeysParams } from "./admin.js";
 export { VERSION } from "./version.js";

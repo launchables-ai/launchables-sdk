@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   Launchables, noul, choice, score, NoulAnswer, VERSION,
   LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError,
-  InvalidRequestError, ValidationError, APIError, APIConnectionError,
+  InvalidRequestError, ValidationError, APIError, APIConnectionError, NotFoundError, ConflictError, DEFAULT_ADMIN_BASE_URL,
 } from "../dist/index.js";
 
 const NOUL = { type: "noul", noul: 0.04 };
@@ -317,4 +317,123 @@ test("a new key (or a new expiry date) on the same client warns again", async ()
   ], { onKeyExpiry: (e) => seen.push(e.key_id) });
   await ask(client); await ask(client); await ask(client); await ask(client);
   assert.deepEqual(seen, ["c_1", "c_2"]);
+});
+
+// -- key management API (admin keys) ---------------------------------------------------------------------------
+
+const ADMIN = "launchables_admin_test";
+const adminSetup = (script, opts = {}) => setup(script, { adminKey: ADMIN, adminBaseURL: "https://console.test", ...opts });
+const KEY = { id: "c_1a2b3c4d", name: "ci", prefix: "launchables_AbCd1234", workspace: { id: "w1", name: "Default" },
+  created_at: "2026-10-15T12:00:00Z", expires_on: "2027-01-13", last_used_on: null, status: "active", revoked_at: null };
+
+test("admin: list sends the admin key to the console", async () => {
+  const { client, calls } = adminSetup([[200, { data: [KEY], has_more: false, next_before: null }]]);
+  const page = await client.admin.keys.list();
+  assert.deepEqual(page.data, [KEY]);
+  assert.equal(calls[0].url, "https://console.test/api/v1/admin/keys");
+  assert.equal(calls[0].method, "GET");
+  assert.equal(calls[0].headers.Authorization, `Bearer ${ADMIN}`);
+});
+
+test("admin: the console is the default", () => {
+  const client = new Launchables({ adminKey: ADMIN });
+  assert.equal(client.adminBaseURL, "https://console.launchables.ai");
+  assert.equal(DEFAULT_ADMIN_BASE_URL, "https://console.launchables.ai");
+});
+
+test("admin: list pages with limit and before; listAll follows them", async () => {
+  const { client, calls } = adminSetup([
+    [200, { data: [KEY], has_more: true, next_before: "abc+/=" }],
+    [200, { data: [{ ...KEY, id: "c_00000002" }], has_more: false, next_before: null }],
+  ]);
+  const ids = [];
+  for await (const k of client.admin.keys.listAll({ limit: 1 })) ids.push(k.id);
+  assert.deepEqual(ids, ["c_1a2b3c4d", "c_00000002"]);
+  assert.equal(calls[0].url, "https://console.test/api/v1/admin/keys?limit=1");
+  assert.equal(calls[1].url, "https://console.test/api/v1/admin/keys?limit=1&before=abc%2B%2F%3D");
+});
+
+test("admin: create, roll and revoke", async () => {
+  const made = { id: "c_1a2b3c4d", name: "ci", key: "launchables_secret", prefix: "launchables_secretAb", workspace: { id: "w1", name: "Default" }, expires_on: "2026-11-14" };
+  const rolled = { ...made, id: "c_99999999", replaces: { id: "c_1a2b3c4d", expires_on: "2026-10-16" } };
+  const { client, calls } = adminSetup([[201, made], [201, rolled], [200, { id: "c_99999999", status: "revoked", revoked_at: "2026-10-15T12:00:00Z" }]]);
+  assert.deepEqual(await client.admin.keys.create({ name: "ci", expires_in_days: 30 }), made);
+  assert.deepEqual(calls[0].json, { name: "ci", expires_in_days: 30 });
+  assert.equal(calls[0].method, "POST");
+  const r = await client.admin.keys.roll("c_1a2b3c4d");
+  assert.equal(r.replaces.expires_on, "2026-10-16");
+  assert.equal(calls[1].url, "https://console.test/api/v1/admin/keys/c_1a2b3c4d/roll");
+  assert.equal((await client.admin.keys.revoke("c_99999999")).status, "revoked");
+  assert.equal(calls[2].method, "DELETE");
+  assert.equal(calls[2].url, "https://console.test/api/v1/admin/keys/c_99999999");
+});
+
+test("admin: ids are escaped in the path", async () => {
+  const { client, calls } = adminSetup([[404, { error: { type: "not_found_error", message: "No key" } }]]);
+  await assert.rejects(client.admin.keys.revoke("../x"), NotFoundError);
+  assert.equal(calls[0].url, "https://console.test/api/v1/admin/keys/..%2Fx");
+});
+
+test("admin: errors carry the server's type and message", async () => {
+  const { client } = adminSetup([[409, { error: { type: "conflict_error", message: "This organisation has 5 active keys" } }]]);
+  const e = await client.admin.keys.create({ name: "x" }).catch((e) => e);
+  assert.ok(e instanceof ConflictError);
+  assert.ok(e instanceof InvalidRequestError);
+  assert.equal(e.type, "conflict_error");
+  assert.equal(e.serverMessage, "This organisation has 5 active keys");
+  assert.equal(e.status, 409);
+});
+
+test("admin: no admin key", async () => {
+  const saved = process.env.LAUNCHABLES_ADMIN_KEY;
+  delete process.env.LAUNCHABLES_ADMIN_KEY;
+  try {
+    const { client, calls } = setup([]);
+    await assert.rejects(client.admin.keys.list(), AuthenticationError);
+    assert.equal(calls.length, 0);
+  } finally {
+    if (saved !== undefined) process.env.LAUNCHABLES_ADMIN_KEY = saved;
+  }
+});
+
+test("admin: LAUNCHABLES_ADMIN_KEY is read, and the API key is never sent to the console", async () => {
+  process.env.LAUNCHABLES_ADMIN_KEY = "launchables_admin_env";
+  try {
+    const { client, calls } = setup([[200, { data: [], has_more: false, next_before: null }]], { adminBaseURL: "https://console.test" });
+    await client.admin.keys.list();
+    assert.equal(calls[0].headers.Authorization, "Bearer launchables_admin_env");
+  } finally {
+    delete process.env.LAUNCHABLES_ADMIN_KEY;
+  }
+});
+
+test("admin: create needs a name, roll and revoke need an id, before any request", async () => {
+  const { client, calls } = adminSetup([]);
+  await assert.rejects(client.admin.keys.create({ name: " " }), ValidationError);
+  await assert.rejects(client.admin.keys.roll(""), ValidationError);
+  assert.equal(calls.length, 0);
+});
+
+test("admin: create and roll are not retried after a 503 or a lost connection, so no second key is made", async () => {
+  const { client, calls } = adminSetup([[503, { error: { type: "api_error", message: "try again" } }], new TypeError("fetch failed")]);
+  await assert.rejects(client.admin.keys.create({ name: "x" }), APIError);
+  await assert.rejects(client.admin.keys.roll("c_1a2b3c4d"), APIConnectionError);
+  assert.equal(calls.length, 2);
+});
+
+test("admin: a 429 is retried (the call did not run); list and revoke retry like any call", async () => {
+  const { client, calls, sleeps } = adminSetup([
+    [429, { error: { type: "rate_limit_error", message: "slow down" } }], [201, { id: "c_1" }],
+    [503, "x"], [200, { data: [], has_more: false, next_before: null }],
+  ]);
+  assert.equal((await client.admin.keys.create({ name: "x" })).id, "c_1");
+  await client.admin.keys.list();
+  assert.equal(calls.length, 4);
+  assert.deepEqual(sleeps, [500, 500]);
+});
+
+test("admin: console responses never set the API key's expiry", async () => {
+  const { client } = adminSetup([[200, { data: [], has_more: false, next_before: null }, { "Launchables-Key-Expires": "2026-10-16" }]]);
+  await client.admin.keys.list();
+  assert.equal(client.keyExpiry, undefined);
 });

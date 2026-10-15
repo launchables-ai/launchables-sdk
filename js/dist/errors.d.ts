@@ -18,7 +18,7 @@ export declare class AuthenticationError extends LaunchablesError {
  */
 export declare class OutOfCreditError extends LaunchablesError {
 }
-/** 403: the key's workspace may not use this model (`type` "model_not_allowed"). */
+/** 403: the key's workspace may not use this model (`type` "model_not_allowed"), or an admin key's maker is no longer an owner. */
 export declare class PermissionDeniedError extends LaunchablesError {
 }
 /** 429: rate limit or daily limit reached. */
@@ -29,6 +29,12 @@ export declare class RateLimitError extends LaunchablesError {
 }
 /** 400, 411, 413, 422 (and any other 4xx): the request cannot be answered. */
 export declare class InvalidRequestError extends LaunchablesError {
+}
+/** 404: no such key or workspace in your organisation (key management API). */
+export declare class NotFoundError extends InvalidRequestError {
+}
+/** 409: the change conflicts with the organisation's state, e.g. its key limit or an archived workspace (key management API). */
+export declare class ConflictError extends InvalidRequestError {
 }
 /** Thrown locally, before any request is sent, for malformed input. */
 export declare class ValidationError extends InvalidRequestError {

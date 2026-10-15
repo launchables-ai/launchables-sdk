@@ -11,6 +11,8 @@ Both have no runtime dependencies, the same surface (`decide`, `noul`/`choice`/`
 
 Every key expires. Each response carries the key's expiry in the `Launchables-Key-Expires` header (and its id in `Launchables-Key-Id`), `GET /v1/key` returns the key's details, and both clients warn once when 14 days or fewer are left (see the Key expiry section of each client's README).
 
+To rotate keys automatically, `client.admin.keys` lists, creates, rolls and revokes your organisation's keys with an admin key (`LAUNCHABLES_ADMIN_KEY`), which an owner makes in the console. See the Managing keys section of each client's README.
+
 Equivalent raw request:
 
 ```

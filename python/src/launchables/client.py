@@ -20,11 +20,14 @@ from .errors import (
     ValidationError,
     error_for_status,
 )
+from .admin import Admin
 from .questions import validate_questions
 from .responses import DecisionResponse, KeyExpiry, KeyInfo, Model, parse_key_info, parse_response
 
 DEFAULT_BASE_URL = "https://api.launchables.ai"
+DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai"
 ENV_API_KEY = "LAUNCHABLES_API_TOKEN"
+ENV_ADMIN_KEY = "LAUNCHABLES_ADMIN_KEY"
 RETRY_STATUSES = frozenset({429, 502, 503})
 BACKOFF_BASE = 0.5
 MAX_RETRY_AFTER = 60.0
@@ -70,9 +73,15 @@ class Launchables:
         timeout: float = 30,
         max_retries: int = 3,
         on_key_expiry: Optional[Callable[[KeyExpiry], None]] = None,
+        admin_key: Optional[str] = None,
+        admin_base_url: str = DEFAULT_ADMIN_BASE_URL,
     ) -> None:
         """``on_key_expiry`` is called once per key and expiry date when a response shows the key has 14 days or fewer left, so you can
-        rotate it on time; without it, the client issues one ``KeyExpiryWarning`` instead."""
+        rotate it on time; without it, the client issues one ``KeyExpiryWarning`` instead.
+
+        ``admin_key`` (or the ``LAUNCHABLES_ADMIN_KEY`` environment variable) is an admin key, starting
+        ``launchables_admin_``, for ``client.admin.keys``. It manages your organisation's API keys and cannot call the
+        Decision API."""
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
         self.api_key = api_key
@@ -82,6 +91,10 @@ class Launchables:
         self.on_key_expiry = on_key_expiry
         self.key_expiry: Optional[KeyExpiry] = None  # the key's expiry as last seen in a response
         self._warned_for: set = set()  # every key and expiry date warned about: once per pair
+        self.admin_key = admin_key
+        self.admin_base_url = admin_base_url.rstrip("/")
+        #: The key management API: ``admin.keys.list()``, ``create()``, ``roll()`` and ``revoke()``. Needs an admin key.
+        self.admin = Admin(self)
 
     # -- public API --------------------------------------------------------
 
@@ -128,6 +141,18 @@ class Launchables:
             )
         return key
 
+    def _resolve_admin_key(self) -> str:
+        key = self.admin_key or os.environ.get(ENV_ADMIN_KEY)
+        if not key:
+            raise AuthenticationError(
+                f"No admin key. Pass admin_key=... or set the {ENV_ADMIN_KEY} environment variable. "
+                "An owner makes one on the API keys page of the console."
+            )
+        return key
+
+    def _admin_request(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
+        return self._request(method, path, body, self._resolve_admin_key(), base_url=self.admin_base_url, admin=True)
+
     def _note_key_headers(self, headers: Any) -> None:
         """Reads the key headers every response to a keyed request carries, and warns once when expiry is close."""
         expires = headers.get("Launchables-Key-Expires") if headers else None
@@ -153,7 +178,10 @@ class Launchables:
         except Exception:  # noqa: BLE001  a failing callback must never break the request it rode on
             pass
 
-    def _request(self, method: str, path: str, body: Any = None, key: Optional[str] = None) -> Dict[str, Any]:
+    def _request(
+        self, method: str, path: str, body: Any = None, key: Optional[str] = None,
+        base_url: Optional[str] = None, admin: bool = False,
+    ) -> Dict[str, Any]:
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         payload = None
         if key:
@@ -161,7 +189,12 @@ class Launchables:
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        url = self.base_url + path
+        base_url = base_url or self.base_url
+        url = base_url + path
+        # a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never
+        # makes two keys
+        once = admin and method == "POST"
+        note = key and not admin
 
         attempt = 0
         while True:
@@ -169,21 +202,21 @@ class Launchables:
             retry_after: Optional[float] = None
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    if key:
+                    if note:
                         self._note_key_headers(resp.headers)
                     return self._decode(resp.read(), resp.status)
             except urllib.error.HTTPError as e:
                 raw = e.read()
-                if key:
+                if note:
                     self._note_key_headers(e.headers)
                 retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
                 err: LaunchablesError = self._http_error(e.code, raw, retry_after)
-                retryable = e.code in RETRY_STATUSES
+                retryable = e.code in RETRY_STATUSES and (not once or e.code == 429)
             except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as e:
                 reason = getattr(e, "reason", e)
-                err = APIConnectionError(f"Could not reach {self.base_url}: {reason}")
+                err = APIConnectionError(f"Could not reach {base_url}: {reason}")
                 err.__cause__ = e
-                retryable = True
+                retryable = not once
             if not retryable or attempt >= self.max_retries:
                 raise err
             delay = retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt)
@@ -208,6 +241,9 @@ class Launchables:
             body = json.loads(raw.decode("utf-8"))
             if isinstance(body, dict) and isinstance(body.get("error"), str):
                 message = body["error"]
+            # the key management API sends {"error": {"type", "message"}}
+            elif isinstance(body, dict) and isinstance(body.get("error"), dict) and isinstance(body["error"].get("message"), str):
+                message = body["error"]["message"]
         except (ValueError, UnicodeDecodeError):
             text = raw[:200].decode("utf-8", "replace").strip()
             if text:

@@ -2,7 +2,9 @@ import { APIConnectionError, AuthenticationError, LaunchablesError, ValidationEr
 import { validateQuestions } from "./questions.js";
 import { parseResponse } from "./types.js";
 import { VERSION } from "./version.js";
+import { AdminKeys } from "./admin.js";
 export const DEFAULT_BASE_URL = "https://api.launchables.ai";
+export const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 const RETRY_STATUSES = new Set([429, 502, 503]);
 const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
@@ -26,9 +28,13 @@ function parseRetryAfter(value) {
 }
 export class Launchables {
     baseURL;
+    adminBaseURL;
+    /** The key management API: `admin.keys.list()`, `create()`, `roll()` and `revoke()`. Needs an admin key. */
+    admin;
     timeout;
     maxRetries;
     apiKey;
+    adminKey;
     fetchImpl;
     sleep;
     onKeyExpiry;
@@ -46,6 +52,11 @@ export class Launchables {
             throw new RangeError("maxRetries must be an integer >= 0");
         this.apiKey = options.apiKey ?? process.env.LAUNCHABLES_API_TOKEN;
         this.baseURL = (options.baseURL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+        this.adminKey = options.adminKey;
+        this.adminBaseURL = (options.adminBaseURL ?? DEFAULT_ADMIN_BASE_URL).replace(/\/+$/, "");
+        this.admin = {
+            keys: new AdminKeys((method, path, body) => this.request(method, path, body, this.requireAdminKey(), { baseURL: this.adminBaseURL, admin: true })),
+        };
         this.timeout = options.timeout ?? 30_000;
         this.maxRetries = maxRetries;
         this.fetchImpl = options.fetch;
@@ -82,6 +93,13 @@ export class Launchables {
         }
         return key;
     }
+    requireAdminKey() {
+        const key = this.adminKey ?? process.env.LAUNCHABLES_ADMIN_KEY;
+        if (!key) {
+            throw new AuthenticationError("No admin key. Pass { adminKey } or set the LAUNCHABLES_ADMIN_KEY environment variable. An owner makes one on the API keys page of the console.");
+        }
+        return key;
+    }
     /** Reads the key headers every response to a keyed request carries, and warns once when expiry is close. */
     noteKeyHeaders(headers) {
         const expires = headers.get("Launchables-Key-Expires");
@@ -113,7 +131,7 @@ export class Launchables {
     async health() {
         return (await this.request("GET", "/health"));
     }
-    async request(method, path, body, key) {
+    async request(method, path, body, key, target = { baseURL: this.baseURL, admin: false }) {
         const headers = {
             Accept: "application/json",
             "User-Agent": `launchables-js/${VERSION}`,
@@ -126,37 +144,42 @@ export class Launchables {
             headers["Content-Type"] = "application/json";
         }
         const doFetch = this.fetchImpl ?? globalThis.fetch;
+        // a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never makes two keys
+        const once = target.admin && method === "POST";
+        const retryable = (status) => RETRY_STATUSES.has(status) && (!once || status === 429);
         for (let attempt = 0;; attempt++) {
             let err;
             let retryAfterMs;
             try {
-                const res = await doFetch(this.baseURL + path, {
+                const res = await doFetch(target.baseURL + path, {
                     method,
                     headers,
                     body: payload,
                     signal: AbortSignal.timeout(this.timeout),
                 });
                 const text = await res.text();
-                if (key)
+                if (key && !target.admin)
                     this.noteKeyHeaders(res.headers);
                 if (res.ok)
                     return decode(text, res.status);
                 const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
                 retryAfterMs = retryAfter === undefined ? undefined : retryAfter * 1000;
                 err = httpError(res.status, text, retryAfter);
-                if (!RETRY_STATUSES.has(res.status))
+                if (!retryable(res.status))
                     throw err;
             }
             catch (e) {
                 if (e instanceof LaunchablesError) {
-                    if (!(e.status !== undefined && RETRY_STATUSES.has(e.status)))
+                    if (!(e.status !== undefined && retryable(e.status)))
                         throw e;
                     err = e;
                 }
                 else {
                     const reason = e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message) : String(e);
-                    err = new APIConnectionError(`Could not reach ${this.baseURL}: ${reason}`);
+                    err = new APIConnectionError(`Could not reach ${target.baseURL}: ${reason}`);
                     err.cause = e;
+                    if (once)
+                        throw err;
                 }
             }
             if (attempt >= this.maxRetries)
@@ -186,6 +209,9 @@ function httpError(status, text, retryAfter) {
         const m = body?.error;
         if (typeof m === "string")
             message = m;
+        // the key management API sends {"error": {"type", "message"}}
+        else if (typeof m?.message === "string")
+            message = m.message;
     }
     catch {
         const t = text.slice(0, 200).trim();

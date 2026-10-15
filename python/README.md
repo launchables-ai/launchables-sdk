@@ -77,17 +77,40 @@ client.key_expiry  # KeyExpiry(key_id, expires_on, days_left) from the last resp
 
 Without `on_key_expiry`, the client issues one `KeyExpiryWarning` when 14 days or fewer are left. `key()` counts as no request and no tokens, and works for a paused key so you can see why it is paused (`pause_reason`). The expiry headers add nothing to your token count. To replace a key without downtime, roll it on the API keys page of the console: the old key keeps working until the end of the next day.
 
+## Managing keys
+
+To rotate keys from your own scripts, use an admin key. An owner makes one on the API keys page of the console (two-step sign-in must be on). Admin keys start with `launchables_admin_`, always expire, and can only manage your organisation's API keys: they cannot call the Decision API.
+
+```python
+client = Launchables(admin_key=os.environ["LAUNCHABLES_ADMIN_KEY"])  # or just set LAUNCHABLES_ADMIN_KEY
+
+page = client.admin.keys.list()  # {"data": [{"id", "name", "prefix", "workspace", "expires_on", "last_used_on", "status", ...}], "has_more", "next_before"}
+for key in client.admin.keys.list_all():
+    print(key["id"], key["status"])
+
+made = client.admin.keys.create("staging", expires_in_days=90)  # workspace_id is optional
+made["key"]  # the full key, shown only this once
+
+rolled = client.admin.keys.roll("c_1a2b3c4d")
+rolled["key"]  # the new key; rolled["replaces"]["expires_on"] is when the old one stops (the end of tomorrow)
+
+client.admin.keys.revoke("c_1a2b3c4d")
+```
+
+Key lifetimes are 30, 90, 180 or 365 days (90 by default), never longer than your organisation allows. These calls go to `https://console.launchables.ai` (`admin_base_url` to change it) and may be made 120 times a minute per admin key. A missing key or workspace raises `NotFoundError` (404); the key limit or an archived workspace raises `ConflictError` (409); both are kinds of `InvalidRequestError`. `create` and `roll` are retried only after a 429, so a retry never makes a second key. Every change shows in Activity in the console.
+
 ## Error handling
 
 All errors derive from `LaunchablesError` and carry `.status`, `.message` (the server's message), `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `None` if it sent none).
 
 | Error | When |
 | --- | --- |
-| `AuthenticationError` | 401, or no key given or found |
+| `AuthenticationError` | 401, or no key (or admin key) given or found |
 | `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's workspace has reached its monthly budget (`.type` `"budget_exceeded"`) |
-| `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`) |
+| `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`), or the admin key's maker is no longer an owner |
 | `RateLimitError` | 429 (`.retry_after` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
+| `NotFoundError`, `ConflictError` | 404 and 409 from the key management API (subclasses of `InvalidRequestError`) |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |
 
