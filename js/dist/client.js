@@ -26,6 +26,13 @@ function parseRetryAfter(value) {
     const s = Number(value);
     return Number.isFinite(s) && s >= 0 ? s : undefined; // HTTP-date form is not supported
 }
+// Trailing slashes off a base URL, in one pass (a regular expression here can be slowed by a long run of slashes).
+function trimSlashes(url) {
+    let end = url.length;
+    while (end > 0 && url[end - 1] === "/")
+        end -= 1;
+    return url.slice(0, end);
+}
 export class Launchables {
     baseURL;
     adminBaseURL;
@@ -51,9 +58,9 @@ export class Launchables {
         if (!Number.isInteger(maxRetries) || maxRetries < 0)
             throw new RangeError("maxRetries must be an integer >= 0");
         this.apiKey = options.apiKey ?? process.env.LAUNCHABLES_API_TOKEN;
-        this.baseURL = (options.baseURL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+        this.baseURL = trimSlashes(options.baseURL ?? DEFAULT_BASE_URL);
         this.adminKey = options.adminKey;
-        this.adminBaseURL = (options.adminBaseURL ?? DEFAULT_ADMIN_BASE_URL).replace(/\/+$/, "");
+        this.adminBaseURL = trimSlashes(options.adminBaseURL ?? DEFAULT_ADMIN_BASE_URL);
         this.admin = {
             keys: new AdminKeys((method, path, body) => this.request(method, path, body, this.requireAdminKey(), { baseURL: this.adminBaseURL, admin: true })),
         };
