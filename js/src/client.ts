@@ -8,8 +8,10 @@ import {
 import { validateQuestions, type Questions } from "./questions.js";
 import { parseResponse, type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { VERSION } from "./version.js";
+import { AdminKeys } from "./admin.js";
 
 export const DEFAULT_BASE_URL = "https://api.launchables.ai";
+export const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 const RETRY_STATUSES = new Set([429, 502, 503]);
 const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
@@ -21,6 +23,13 @@ export interface LaunchablesOptions {
   apiKey?: string;
   /** Defaults to https://api.launchables.ai. Set it for self-hosted endpoints. */
   baseURL?: string;
+  /**
+   * Admin key (starts with `launchables_admin_`) for `client.admin.keys`. Defaults to the LAUNCHABLES_ADMIN_KEY env var.
+   * It manages your organisation's API keys and cannot call the Decision API. Keep it on a server.
+   */
+  adminKey?: string;
+  /** Where the key management API is. Defaults to https://console.launchables.ai. */
+  adminBaseURL?: string;
   /** Per-attempt timeout in milliseconds. Default 30000. */
   timeout?: number;
   /** Retries after the first attempt for 429, 502, 503 and connection errors. Default 3. */
@@ -53,11 +62,22 @@ function parseRetryAfter(value: string | null): number | undefined {
   return Number.isFinite(s) && s >= 0 ? s : undefined; // HTTP-date form is not supported
 }
 
+// Trailing slashes off a base URL, in one pass (a regular expression here can be slowed by a long run of slashes).
+function trimSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end -= 1;
+  return url.slice(0, end);
+}
+
 export class Launchables {
   readonly baseURL: string;
+  readonly adminBaseURL: string;
+  /** The key management API: `admin.keys.list()`, `create()`, `roll()` and `revoke()`. Needs an admin key. */
+  readonly admin: { keys: AdminKeys };
   readonly timeout: number;
   readonly maxRetries: number;
   private readonly apiKey: string | undefined;
+  private readonly adminKey: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly onKeyExpiry: ((expiry: KeyExpiry) => void | Promise<void>) | undefined;
@@ -76,7 +96,14 @@ export class Launchables {
     const maxRetries = options.maxRetries ?? 3;
     if (!Number.isInteger(maxRetries) || maxRetries < 0) throw new RangeError("maxRetries must be an integer >= 0");
     this.apiKey = options.apiKey ?? process.env.LAUNCHABLES_API_TOKEN;
-    this.baseURL = (options.baseURL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseURL = trimSlashes(options.baseURL ?? DEFAULT_BASE_URL);
+    this.adminKey = options.adminKey;
+    this.adminBaseURL = trimSlashes(options.adminBaseURL ?? DEFAULT_ADMIN_BASE_URL);
+    this.admin = {
+      keys: new AdminKeys((method, path, body) =>
+        this.request(method, path, body, this.requireAdminKey(), { baseURL: this.adminBaseURL, admin: true }),
+      ),
+    };
     this.timeout = options.timeout ?? 30_000;
     this.maxRetries = maxRetries;
     this.fetchImpl = options.fetch;
@@ -123,6 +150,16 @@ export class Launchables {
     return key;
   }
 
+  private requireAdminKey(): string {
+    const key = this.adminKey ?? process.env.LAUNCHABLES_ADMIN_KEY;
+    if (!key) {
+      throw new AuthenticationError(
+        "No admin key. Pass { adminKey } or set the LAUNCHABLES_ADMIN_KEY environment variable. An owner makes one on the API keys page of the console.",
+      );
+    }
+    return key;
+  }
+
   /** Reads the key headers every response to a keyed request carries, and warns once when expiry is close. */
   private noteKeyHeaders(headers: Headers): void {
     const expires = headers.get("Launchables-Key-Expires");
@@ -150,10 +187,11 @@ export class Launchables {
   }
 
   private async request(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "DELETE",
     path: string,
     body?: unknown,
     key?: string,
+    target: { baseURL: string; admin: boolean } = { baseURL: this.baseURL, admin: false },
   ): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -166,32 +204,36 @@ export class Launchables {
       headers["Content-Type"] = "application/json";
     }
     const doFetch = this.fetchImpl ?? globalThis.fetch;
+    // a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never makes two keys
+    const once = target.admin && method === "POST";
+    const retryable = (status: number) => RETRY_STATUSES.has(status) && (!once || status === 429);
 
     for (let attempt = 0; ; attempt++) {
       let err: LaunchablesError;
       let retryAfterMs: number | undefined;
       try {
-        const res = await doFetch(this.baseURL + path, {
+        const res = await doFetch(target.baseURL + path, {
           method,
           headers,
           body: payload,
           signal: AbortSignal.timeout(this.timeout),
         });
         const text = await res.text();
-        if (key) this.noteKeyHeaders(res.headers);
+        if (key && !target.admin) this.noteKeyHeaders(res.headers);
         if (res.ok) return decode(text, res.status);
         const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
         retryAfterMs = retryAfter === undefined ? undefined : retryAfter * 1000;
         err = httpError(res.status, text, retryAfter);
-        if (!RETRY_STATUSES.has(res.status)) throw err;
+        if (!retryable(res.status)) throw err;
       } catch (e) {
         if (e instanceof LaunchablesError) {
-          if (!(e.status !== undefined && RETRY_STATUSES.has(e.status))) throw e;
+          if (!(e.status !== undefined && retryable(e.status))) throw e;
           err = e;
         } else {
           const reason = e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message) : String(e);
-          err = new APIConnectionError(`Could not reach ${this.baseURL}: ${reason}`);
+          err = new APIConnectionError(`Could not reach ${target.baseURL}: ${reason}`);
           (err as { cause?: unknown }).cause = e;
+          if (once) throw err;
         }
       }
       if (attempt >= this.maxRetries) throw err;
@@ -220,6 +262,8 @@ function httpError(status: number, text: string, retryAfter?: number): Launchabl
     body = JSON.parse(text);
     const m = (body as { error?: unknown } | null)?.error;
     if (typeof m === "string") message = m;
+    // the key management API sends {"error": {"type", "message"}}
+    else if (typeof (m as { message?: unknown } | null)?.message === "string") message = (m as { message: string }).message;
   } catch {
     const t = text.slice(0, 200).trim();
     if (t) message = t;

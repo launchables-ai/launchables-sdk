@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- `client.admin.keys` manages your organisation's API keys through the key management API: `list` (a page at a time, newest first), `listAll` / `list_all` (every key), `create`, `roll` and `revoke`. It needs an admin key, which an owner makes on the API keys page of the console.
+- The admin key is a separate option (`adminKey` in JavaScript, `admin_key` in Python) or the `LAUNCHABLES_ADMIN_KEY` environment variable. It is sent only to the console, at `https://console.launchables.ai` by default (`adminBaseURL` / `admin_base_url` to change it), never to the Decision API.
+- `NotFoundError` for HTTP 404 and `ConflictError` for HTTP 409. Both are kinds of `InvalidRequestError`, so existing handlers still catch them.
+- Errors sent as `{"error": {"type", "message"}}` now give the message and `type` as well as errors sent as `{"error": "..."}`.
+- `create` and `roll` are retried only after a 429, so a retry never makes a second key. Other calls retry as before.
+
 ## 0.2.0
 
 - `key()` returns the calling key's details: id, name, expiry date and days left, rate and daily limits, and whether it is paused (with the reason). It counts as no request and no tokens.

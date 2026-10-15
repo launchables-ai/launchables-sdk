@@ -1,6 +1,8 @@
 import { type Questions } from "./questions.js";
 import { type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
+import { AdminKeys } from "./admin.js";
 export declare const DEFAULT_BASE_URL = "https://api.launchables.ai";
+export declare const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 /** Warn once when a key has this many days or fewer left. */
 export declare const KEY_EXPIRY_WARNING_DAYS = 14;
 export interface LaunchablesOptions {
@@ -8,6 +10,13 @@ export interface LaunchablesOptions {
     apiKey?: string;
     /** Defaults to https://api.launchables.ai. Set it for self-hosted endpoints. */
     baseURL?: string;
+    /**
+     * Admin key (starts with `launchables_admin_`) for `client.admin.keys`. Defaults to the LAUNCHABLES_ADMIN_KEY env var.
+     * It manages your organisation's API keys and cannot call the Decision API. Keep it on a server.
+     */
+    adminKey?: string;
+    /** Where the key management API is. Defaults to https://console.launchables.ai. */
+    adminBaseURL?: string;
     /** Per-attempt timeout in milliseconds. Default 30000. */
     timeout?: number;
     /** Retries after the first attempt for 429, 502, 503 and connection errors. Default 3. */
@@ -26,9 +35,15 @@ export interface LaunchablesOptions {
 }
 export declare class Launchables {
     readonly baseURL: string;
+    readonly adminBaseURL: string;
+    /** The key management API: `admin.keys.list()`, `create()`, `roll()` and `revoke()`. Needs an admin key. */
+    readonly admin: {
+        keys: AdminKeys;
+    };
     readonly timeout: number;
     readonly maxRetries: number;
     private readonly apiKey;
+    private readonly adminKey;
     private readonly fetchImpl;
     private readonly sleep;
     private readonly onKeyExpiry;
@@ -45,6 +60,7 @@ export declare class Launchables {
      */
     key(): Promise<KeyInfo>;
     private requireKey;
+    private requireAdminKey;
     /** Reads the key headers every response to a keyed request carries, and warns once when expiry is close. */
     private noteKeyHeaders;
     /** Returns the server's health payload, e.g. `{ status: "ok" }`. */

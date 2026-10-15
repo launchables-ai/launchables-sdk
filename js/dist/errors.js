@@ -10,7 +10,8 @@ export class LaunchablesError extends Error {
         this.name = new.target.name;
         this.status = status;
         this.body = body;
-        const t = body?.type;
+        const b = body;
+        const t = b?.type ?? (typeof b?.error === "object" ? b?.error?.type : undefined);
         this.type = typeof t === "string" ? t : null;
         this.serverMessage = message;
     }
@@ -26,7 +27,7 @@ export class AuthenticationError extends LaunchablesError {
  */
 export class OutOfCreditError extends LaunchablesError {
 }
-/** 403: the key's workspace may not use this model (`type` "model_not_allowed"). */
+/** 403: the key's workspace may not use this model (`type` "model_not_allowed"), or an admin key's maker is no longer an owner. */
 export class PermissionDeniedError extends LaunchablesError {
 }
 /** 429: rate limit or daily limit reached. */
@@ -40,6 +41,12 @@ export class RateLimitError extends LaunchablesError {
 }
 /** 400, 411, 413, 422 (and any other 4xx): the request cannot be answered. */
 export class InvalidRequestError extends LaunchablesError {
+}
+/** 404: no such key or workspace in your organisation (key management API). */
+export class NotFoundError extends InvalidRequestError {
+}
+/** 409: the change conflicts with the organisation's state, e.g. its key limit or an archived workspace (key management API). */
+export class ConflictError extends InvalidRequestError {
 }
 /** Thrown locally, before any request is sent, for malformed input. */
 export class ValidationError extends InvalidRequestError {
@@ -57,6 +64,10 @@ export function errorForStatus(status, message, body, retryAfter) {
         return new OutOfCreditError(message, status, body);
     if (status === 403)
         return new PermissionDeniedError(message, status, body);
+    if (status === 404)
+        return new NotFoundError(message, status, body);
+    if (status === 409)
+        return new ConflictError(message, status, body);
     if (status === 429)
         return new RateLimitError(message, status, body, retryAfter);
     if (status >= 400 && status < 500)

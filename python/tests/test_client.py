@@ -9,7 +9,7 @@ import launchables
 from launchables import (
     APIConnectionError, APIError, AuthenticationError, InvalidRequestError,
     Launchables, LaunchablesError, OutOfCreditError, PermissionDeniedError,
-    RateLimitError, ValidationError,
+    RateLimitError, ValidationError, NotFoundError, ConflictError, DEFAULT_ADMIN_BASE_URL,
     choice, noul, score,
 )
 from launchables import client as client_module
@@ -51,7 +51,7 @@ class Server:
                 self.end_headers()
                 self.wfile.write(data)
 
-            do_GET = do_POST = _serve
+            do_GET = do_POST = do_DELETE = _serve
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -392,6 +392,120 @@ class ValidationTests(Base):
     def test_validation_error_is_invalid_request(self):
         self.assertTrue(issubclass(ValidationError, InvalidRequestError))
         self.assertTrue(issubclass(ValidationError, ValueError))
+
+
+ADMIN = "launchables_admin_test"
+KEY = {"id": "c_1a2b3c4d", "name": "ci", "prefix": "launchables_AbCd1234", "workspace": {"id": "w1", "name": "Default"},
+       "created_at": "2026-10-15T12:00:00Z", "expires_on": "2027-01-13", "last_used_on": None, "status": "active", "revoked_at": None}
+
+
+class AdminKeysTests(Base):
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("LAUNCHABLES_ADMIN_KEY", None)
+        self.admin = Launchables(api_key="launchables_test", base_url="http://127.0.0.1:9", admin_key=ADMIN, admin_base_url=self.server.url)
+
+    def test_list_sends_the_admin_key_to_the_console(self):
+        self.reply(200, {"data": [KEY], "has_more": False, "next_before": None})
+        page = self.admin.admin.keys.list()
+        self.assertEqual(page["data"], [KEY])
+        req = self.server.requests[0]
+        self.assertEqual((req["method"], req["path"]), ("GET", "/api/v1/admin/keys"))
+        self.assertEqual(req["headers"]["Authorization"], f"Bearer {ADMIN}")
+
+    def test_the_console_is_the_default(self):
+        self.assertEqual(Launchables().admin_base_url, "https://console.launchables.ai")
+        self.assertEqual(DEFAULT_ADMIN_BASE_URL, "https://console.launchables.ai")
+
+    def test_list_all_follows_pages(self):
+        self.reply(200, {"data": [KEY], "has_more": True, "next_before": "abc+/="})
+        self.reply(200, {"data": [dict(KEY, id="c_00000002")], "has_more": False, "next_before": None})
+        ids = [k["id"] for k in self.admin.admin.keys.list_all(limit=1)]
+        self.assertEqual(ids, ["c_1a2b3c4d", "c_00000002"])
+        self.assertEqual(self.server.requests[0]["path"], "/api/v1/admin/keys?limit=1")
+        self.assertEqual(self.server.requests[1]["path"], "/api/v1/admin/keys?limit=1&before=abc%2B%2F%3D")
+
+    def test_create_roll_revoke(self):
+        made = {"id": "c_1a2b3c4d", "name": "ci", "key": "launchables_secret", "expires_on": "2026-11-14"}
+        self.reply(201, made)
+        self.reply(201, dict(made, id="c_99999999", replaces={"id": "c_1a2b3c4d", "expires_on": "2026-10-16"}))
+        self.reply(200, {"id": "c_99999999", "status": "revoked", "revoked_at": "2026-10-15T12:00:00Z"})
+        self.assertEqual(self.admin.admin.keys.create("ci", expires_in_days=30), made)
+        self.assertEqual(self.server.requests[0]["body"], {"name": "ci", "expires_in_days": 30})
+        r = self.admin.admin.keys.roll("c_1a2b3c4d")
+        self.assertEqual(r["replaces"]["expires_on"], "2026-10-16")
+        self.assertEqual(self.server.requests[1]["path"], "/api/v1/admin/keys/c_1a2b3c4d/roll")
+        self.assertEqual(self.admin.admin.keys.revoke("c_99999999")["status"], "revoked")
+        self.assertEqual((self.server.requests[2]["method"], self.server.requests[2]["path"]), ("DELETE", "/api/v1/admin/keys/c_99999999"))
+
+    def test_ids_are_escaped(self):
+        self.reply(404, {"error": {"type": "not_found_error", "message": "No key"}})
+        with self.assertRaises(NotFoundError):
+            self.admin.admin.keys.revoke("../x")
+        self.assertEqual(self.server.requests[0]["path"], "/api/v1/admin/keys/..%2Fx")
+
+    def test_errors_carry_type_and_message(self):
+        self.reply(409, {"error": {"type": "conflict_error", "message": "This organisation has 5 active keys"}})
+        with self.assertRaises(ConflictError) as cm:
+            self.admin.admin.keys.create("x")
+        e = cm.exception
+        self.assertIsInstance(e, InvalidRequestError)
+        self.assertEqual((e.type, e.message, e.status), ("conflict_error", "This organisation has 5 active keys", 409))
+
+    def test_no_admin_key(self):
+        with self.assertRaises(AuthenticationError):
+            self.client.admin.keys.list()
+        self.assertEqual(self.server.requests, [])
+
+    def test_env_admin_key(self):
+        os.environ["LAUNCHABLES_ADMIN_KEY"] = "launchables_admin_env"
+        self.reply(200, {"data": [], "has_more": False, "next_before": None})
+        Launchables(admin_base_url=self.server.url).admin.keys.list()
+        self.assertEqual(self.server.requests[0]["headers"]["Authorization"], "Bearer launchables_admin_env")
+
+    def test_local_validation(self):
+        with self.assertRaises(ValidationError):
+            self.admin.admin.keys.create(" ")
+        with self.assertRaises(ValidationError):
+            self.admin.admin.keys.roll("")
+        self.assertEqual(self.server.requests, [])
+
+    def test_create_and_roll_not_retried_after_503(self):
+        self.reply(503, {"error": {"type": "api_error", "message": "try again"}})
+        self.reply(503, {"error": {"type": "api_error", "message": "try again"}})
+        with self.assertRaises(APIError):
+            self.admin.admin.keys.create("x")
+        with self.assertRaises(APIError):
+            self.admin.admin.keys.roll("c_1a2b3c4d")
+        self.assertEqual(len(self.server.requests), 2)
+        self.assertEqual(self.sleeps, [])
+
+    def test_create_not_retried_after_lost_connection(self):
+        client = Launchables(admin_key=ADMIN, admin_base_url="http://127.0.0.1:9")
+        with self.assertRaises(APIConnectionError):
+            client.admin.keys.create("x")
+        self.assertEqual(self.sleeps, [])
+
+    def test_429_retried_and_list_retries_like_any_call(self):
+        self.reply(429, {"error": {"type": "rate_limit_error", "message": "slow down"}})
+        self.reply(201, {"id": "c_1"})
+        self.reply(503, b"x")
+        self.reply(200, {"data": [], "has_more": False, "next_before": None})
+        self.assertEqual(self.admin.admin.keys.create("x")["id"], "c_1")
+        self.admin.admin.keys.list()
+        self.assertEqual(len(self.server.requests), 4)
+        self.assertEqual(self.sleeps, [0.5, 0.5])
+
+    def test_an_empty_admin_url_never_falls_back_to_the_decision_api(self):
+        client = Launchables(base_url=self.server.url, admin_key=ADMIN, admin_base_url="")
+        with self.assertRaises(Exception):
+            client.admin.keys.list()
+        self.assertEqual(self.server.requests, [])
+
+    def test_console_responses_never_set_the_api_keys_expiry(self):
+        self.reply(200, {"data": [], "has_more": False, "next_before": None}, {"Launchables-Key-Expires": "2026-10-16"})
+        self.admin.admin.keys.list()
+        self.assertIsNone(self.admin.key_expiry)
 
 
 class NoulDecideTests(unittest.TestCase):

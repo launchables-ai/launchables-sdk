@@ -1,13 +1,16 @@
 """Python client for the Launchables Decision API."""
 
 from ._version import __version__
-from .client import DEFAULT_BASE_URL, KEY_EXPIRY_WARNING_DAYS, KeyExpiryWarning, Launchables
+from .admin import AdminKeys
+from .client import DEFAULT_ADMIN_BASE_URL, DEFAULT_BASE_URL, KEY_EXPIRY_WARNING_DAYS, KeyExpiryWarning, Launchables
 from .errors import (
     APIConnectionError,
     APIError,
     AuthenticationError,
+    ConflictError,
     InvalidRequestError,
     LaunchablesError,
+    NotFoundError,
     OutOfCreditError,
     PermissionDeniedError,
     RateLimitError,
@@ -26,10 +29,10 @@ from .responses import (
 )
 
 __all__ = [
-    "__version__", "Launchables", "DEFAULT_BASE_URL", "KEY_EXPIRY_WARNING_DAYS", "KeyExpiryWarning", "KeyInfo", "KeyExpiry",
+    "__version__", "Launchables", "DEFAULT_BASE_URL", "DEFAULT_ADMIN_BASE_URL", "AdminKeys", "KEY_EXPIRY_WARNING_DAYS", "KeyExpiryWarning", "KeyInfo", "KeyExpiry",
     "noul", "choice", "score",
     "DecisionResponse", "NoulAnswer", "ChoiceAnswer", "ScoreAnswer", "Usage", "Model",
     "LaunchablesError", "AuthenticationError", "OutOfCreditError", "PermissionDeniedError",
-    "RateLimitError", "InvalidRequestError",
+    "RateLimitError", "InvalidRequestError", "NotFoundError", "ConflictError",
     "ValidationError", "APIError", "APIConnectionError",
 ]

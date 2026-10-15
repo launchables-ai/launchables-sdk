@@ -19,6 +19,8 @@ class LaunchablesError(Exception):
         self.status = status
         self.body = body
         t = body.get("type") if isinstance(body, dict) else None
+        if t is None and isinstance(body, dict) and isinstance(body.get("error"), dict):
+            t = body["error"].get("type")  # the key management API's {"error": {"type", "message"}}
         #: The server's error type (e.g. "out_of_credit", "rate_limited"), or None if it sent none.
         self.type: Optional[str] = t if isinstance(t, str) else None
 
@@ -38,7 +40,8 @@ class OutOfCreditError(LaunchablesError):
 
 
 class PermissionDeniedError(LaunchablesError):
-    """403: the key's workspace may not use this model (``type`` "model_not_allowed")."""
+    """403: the key's workspace may not use this model (``type`` "model_not_allowed"), or an admin key's maker is no
+    longer an owner."""
 
 
 class RateLimitError(LaunchablesError):
@@ -51,6 +54,15 @@ class RateLimitError(LaunchablesError):
 
 class InvalidRequestError(LaunchablesError):
     """400, 411, 413, 422 (and any other 4xx): the request cannot be answered."""
+
+
+class NotFoundError(InvalidRequestError):
+    """404: no such key or workspace in your organisation (key management API)."""
+
+
+class ConflictError(InvalidRequestError):
+    """409: the change conflicts with the organisation's state, e.g. its key limit or an archived workspace (key
+    management API)."""
 
 
 class ValidationError(InvalidRequestError, ValueError):
@@ -72,6 +84,10 @@ def error_for_status(status, message, body=None, retry_after=None) -> Launchable
         return OutOfCreditError(message, status, body)
     if status == 403:
         return PermissionDeniedError(message, status, body)
+    if status == 404:
+        return NotFoundError(message, status, body)
+    if status == 409:
+        return ConflictError(message, status, body)
     if status == 429:
         return RateLimitError(message, status, body, retry_after)
     if 400 <= status < 500:
