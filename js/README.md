@@ -56,6 +56,27 @@ await client.health(); // { status: "ok" }
 
 `models()` and `health()` need no token.
 
+## Key expiry
+
+Every API key expires. The client reads the expiry date from each response, so your program can plan rotation instead of finding out when the key stops working.
+
+```ts
+const client = new Launchables({
+  onKeyExpiry: ({ key_id, expires_on, days_left }) => {
+    // called once per key and expiry date when 14 days or fewer are left: alert your team, or start a rotation job
+    alertTeam(`Launchables key ${key_id} expires on ${expires_on} (${days_left} days left)`);
+  },
+});
+
+await client.key();
+// { id: "c_1a2b3c4d", name: "prod", expires_on: "2027-01-13", days_left: 89, workspace: null,
+//   rate_limit_per_minute: 600, daily_limit: 10000000, paused: false }
+
+client.keyExpiry; // { key_id, expires_on, days_left } from the last response, or undefined
+```
+
+Without `onKeyExpiry`, the client writes one console warning when 14 days or fewer are left. `key()` counts as no request and no tokens, and works for a paused key so you can see why it is paused (`pause_reason`). The expiry headers add nothing to your token count. To replace a key without downtime, roll it on the API keys page of the console: the old key keeps working until the end of the next day.
+
 ## Error handling
 
 All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `null` if it sent none).

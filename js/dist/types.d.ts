@@ -54,6 +54,28 @@ export interface Model {
     object: string;
     owned_by: string;
 }
+/** The calling key, from `client.key()`. */
+export interface KeyInfo {
+    id: string;
+    name: string | null;
+    /** The last day the key works (YYYY-MM-DD), or null if it never expires. */
+    expires_on: string | null;
+    days_left: number | null;
+    workspace: string | null;
+    rate_limit_per_minute: number | null;
+    daily_limit: number | null;
+    /** True when the key may not be used now; `pause_reason` says why ("credit", "budget" or "model"). */
+    paused: boolean;
+    pause_reason?: string;
+}
+/** What the client last learnt about its key's expiry, from the response headers. */
+export interface KeyExpiry {
+    key_id: string | null;
+    /** The last day the key works (YYYY-MM-DD). */
+    expires_on: string;
+    /** Whole days from today (UTC) to `expires_on`; 0 on the last day. */
+    days_left: number;
+}
 type Obj = Record<string, unknown>;
 export declare function parseAnswer(data: Obj): Answer;
 export declare function parseResponse<Q extends Questions>(data: Obj): DecisionResponse<Q>;

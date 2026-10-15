@@ -151,6 +151,76 @@ class KeyTests(Base):
         self.assertEqual(self.server.requests[0]["headers"]["Authorization"], "Bearer launchables_test")
 
 
+class KeyExpiryTests(Base):
+    """0.2.0: the Launchables-Key-* headers, one warning at 14 days or fewer, and client.key()."""
+
+    @staticmethod
+    def in_days(n):
+        import datetime
+        return (datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=n)).isoformat()
+
+    def test_header_is_read_and_the_callback_fires_once(self):
+        seen = []
+        c = Launchables(api_key="launchables_test", base_url=self.server.url, on_key_expiry=seen.append)
+        for _ in range(2):
+            self.reply(200, {"model": "m", "answers": {"q": NOUL}}, {"Launchables-Key-Id": "c_1", "Launchables-Key-Expires": self.in_days(10)})
+            c.decide("s", {"q": noul("x")})
+        self.assertEqual(c.key_expiry, launchables.KeyExpiry(key_id="c_1", expires_on=self.in_days(10), days_left=10))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].days_left, 10)
+
+    def test_no_callback_beyond_14_days_and_nothing_without_the_header(self):
+        seen = []
+        c = Launchables(api_key="launchables_test", base_url=self.server.url, on_key_expiry=seen.append)
+        self.reply(200, {"model": "m", "answers": {"q": NOUL}}, {"Launchables-Key-Expires": self.in_days(40)})
+        c.decide("s", {"q": noul("x")})
+        self.assertEqual((c.key_expiry.days_left, seen), (40, []))
+        self.reply(200, {"model": "m", "answers": {"q": NOUL}})
+        self.ask()
+        self.assertIsNone(self.client.key_expiry)
+
+    def test_without_a_callback_one_warning_is_issued(self):
+        import warnings
+        for _ in range(2):
+            self.reply(200, {"model": "m", "answers": {"q": NOUL}}, {"Launchables-Key-Expires": self.in_days(3)})
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.ask(); self.ask()
+        mine = [w for w in caught if issubclass(w.category, launchables.KeyExpiryWarning)]
+        self.assertEqual(len(mine), 1)
+        self.assertIn("3 days left", str(mine[0].message))
+
+    def test_a_failing_callback_never_breaks_the_request_and_errors_carry_the_header(self):
+        def boom(_):
+            raise RuntimeError("boom")
+        c = Launchables(api_key="launchables_test", base_url=self.server.url, on_key_expiry=boom)
+        self.reply(402, {"error": "out of credit", "type": "out_of_credit"}, {"Launchables-Key-Expires": self.in_days(2)})
+        with self.assertRaises(OutOfCreditError):
+            c.decide("s", {"q": noul("x")})
+        self.assertEqual(c.key_expiry.days_left, 2)
+
+    def test_key_returns_the_calling_keys_details(self):
+        info = {"id": "c_1", "name": "prod", "expires_on": self.in_days(30), "days_left": 30, "workspace": None,
+                "rate_limit_per_minute": 60, "daily_limit": 2000, "paused": False}
+        self.reply(200, info)
+        k = self.client.key()
+        self.assertEqual((k.id, k.name, k.days_left, k.paused, k.pause_reason), ("c_1", "prod", 30, False, None))
+        r = self.server.requests[0]
+        self.assertEqual((r["method"], r["path"], r["headers"]["Authorization"]), ("GET", "/v1/key", "Bearer launchables_test"))
+
+    def test_a_new_key_on_the_same_client_warns_again(self):
+        seen = []
+        c = Launchables(api_key="launchables_test", base_url=self.server.url, on_key_expiry=lambda e: seen.append(e.key_id))
+        for kid, days in (("c_1", 5), ("c_2", 9), ("c_2", 9), ("c_1", 5)):
+            self.reply(200, {"model": "m", "answers": {"q": NOUL}}, {"Launchables-Key-Id": kid, "Launchables-Key-Expires": self.in_days(days)})
+            c.decide("s", {"q": noul("x")})
+        self.assertEqual(seen, ["c_1", "c_2"])
+
+    def test_key_needs_an_api_key(self):
+        with self.assertRaises(AuthenticationError):
+            Launchables(base_url=self.server.url).key()
+
+
 class ErrorTests(Base):
     def check(self, status, cls, retried=False):
         for _ in range(5):

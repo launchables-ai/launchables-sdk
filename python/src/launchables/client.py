@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import socket
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Mapping, Optional, Union
+import warnings
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 from ._version import __version__
 from .errors import (
@@ -19,7 +21,7 @@ from .errors import (
     error_for_status,
 )
 from .questions import validate_questions
-from .responses import DecisionResponse, Model, parse_response
+from .responses import DecisionResponse, KeyExpiry, KeyInfo, Model, parse_key_info, parse_response
 
 DEFAULT_BASE_URL = "https://api.launchables.ai"
 ENV_API_KEY = "LAUNCHABLES_API_TOKEN"
@@ -27,6 +29,20 @@ RETRY_STATUSES = frozenset({429, 502, 503})
 BACKOFF_BASE = 0.5
 MAX_RETRY_AFTER = 60.0
 USER_AGENT = f"launchables-python/{__version__}"
+KEY_EXPIRY_WARNING_DAYS = 14  # warn once when a key has this many days or fewer left
+
+
+class KeyExpiryWarning(UserWarning):
+    """Issued once per client when the API key has 14 days or fewer left and no ``on_key_expiry`` callback is set."""
+
+
+def _days_until(date: str) -> Optional[int]:
+    """Whole days from today (UTC) to a YYYY-MM-DD date, or None if it is not one."""
+    try:
+        end = datetime.date.fromisoformat(date)
+    except (TypeError, ValueError):
+        return None
+    return (end - datetime.datetime.now(datetime.timezone.utc).date()).days
 
 _sleep = time.sleep  # patched in tests
 
@@ -53,13 +69,19 @@ class Launchables:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30,
         max_retries: int = 3,
+        on_key_expiry: Optional[Callable[[KeyExpiry], None]] = None,
     ) -> None:
+        """``on_key_expiry`` is called once per key and expiry date when a response shows the key has 14 days or fewer left, so you can
+        rotate it on time; without it, the client issues one ``KeyExpiryWarning`` instead."""
         if max_retries < 0:
             raise ValueError("max_retries must be >= 0")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.max_retries = max_retries
+        self.on_key_expiry = on_key_expiry
+        self.key_expiry: Optional[KeyExpiry] = None  # the key's expiry as last seen in a response
+        self._warned_for: set = set()  # every key and expiry date warned about: once per pair
 
     # -- public API --------------------------------------------------------
 
@@ -80,11 +102,17 @@ class Launchables:
         return parse_response(data)
 
     def models(self) -> List[Model]:
-        data = self._request("GET", "/v1/models")
+        # the key is optional here; when there is one, the response also tells the client when it expires
+        data = self._request("GET", "/v1/models", key=self.api_key or os.environ.get(ENV_API_KEY))
         return [
             Model(id=m["id"], owned_by=m.get("owned_by", ""), raw=m)
             for m in data.get("data", [])
         ]
+
+    def key(self) -> KeyInfo:
+        """Details of the key this client uses: id, name, when it expires and how many days are left, its limits, and
+        whether it is paused (and why). It counts as no request and no tokens."""
+        return parse_key_info(self._request("GET", "/v1/key", key=self._resolve_key()))
 
     def health(self) -> Dict[str, Any]:
         """Returns the server's health payload, e.g. ``{"status": "ok"}``."""
@@ -99,6 +127,31 @@ class Launchables:
                 f"No API key. Pass api_key=... or set the {ENV_API_KEY} environment variable."
             )
         return key
+
+    def _note_key_headers(self, headers: Any) -> None:
+        """Reads the key headers every response to a keyed request carries, and warns once when expiry is close."""
+        expires = headers.get("Launchables-Key-Expires") if headers else None
+        if not expires:
+            return
+        days = _days_until(expires)
+        if days is None:
+            return
+        self.key_expiry = KeyExpiry(key_id=headers.get("Launchables-Key-Id"), expires_on=expires, days_left=days)
+        which = f"{self.key_expiry.key_id or ''}|{expires}"
+        if days > KEY_EXPIRY_WARNING_DAYS or which in self._warned_for:
+            return
+        self._warned_for.add(which)
+        try:
+            if self.on_key_expiry is not None:
+                self.on_key_expiry(self.key_expiry)
+            else:
+                warnings.warn(
+                    f"Launchables API key {self.key_expiry.key_id or ''} expires on {expires} ({days} day"
+                    f"{'' if days == 1 else 's'} left). Roll it in the console to replace it without downtime.",
+                    KeyExpiryWarning, stacklevel=4,
+                )
+        except Exception:  # noqa: BLE001  a failing callback must never break the request it rode on
+            pass
 
     def _request(self, method: str, path: str, body: Any = None, key: Optional[str] = None) -> Dict[str, Any]:
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
@@ -116,9 +169,13 @@ class Launchables:
             retry_after: Optional[float] = None
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    if key:
+                        self._note_key_headers(resp.headers)
                     return self._decode(resp.read(), resp.status)
             except urllib.error.HTTPError as e:
                 raw = e.read()
+                if key:
+                    self._note_key_headers(e.headers)
                 retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
                 err: LaunchablesError = self._http_error(e.code, raw, retry_after)
                 retryable = e.code in RETRY_STATUSES
