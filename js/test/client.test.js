@@ -230,3 +230,67 @@ test("NoulAnswer.decide thresholds", () => {
   assert.equal(new NoulAnswer(0.6).decide({ thresholdYes: 0.6, thresholdNo: 0.4 }), "yes");
   assert.throws(() => new NoulAnswer(0.5).decide({ thresholdYes: 0.2, thresholdNo: 0.8 }), RangeError);
 });
+
+// Key expiry (0.2.0): the Launchables-Key-* headers, the warning once at 14 days or fewer, and client.key()
+const inDays = (n) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+const OK = { model: "m", answers: { q: NOUL } };
+
+test("expiry header is read and the callback fires once at 14 days or fewer", async () => {
+  const seen = [];
+  const { client } = setup([
+    [200, OK, { "Launchables-Key-Id": "c_1", "Launchables-Key-Expires": inDays(10) }],
+    [200, OK, { "Launchables-Key-Id": "c_1", "Launchables-Key-Expires": inDays(10) }],
+  ], { onKeyExpiry: (e) => seen.push(e) });
+  await ask(client); await ask(client);
+  assert.deepEqual(client.keyExpiry, { key_id: "c_1", expires_on: inDays(10), days_left: 10 });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0], { key_id: "c_1", expires_on: inDays(10), days_left: 10 });
+});
+
+test("no callback when more than 14 days are left; no header means nothing recorded", async () => {
+  const seen = [];
+  const { client } = setup([[200, OK, { "Launchables-Key-Expires": inDays(40) }], [200, OK]], { onKeyExpiry: (e) => seen.push(e) });
+  await ask(client);
+  assert.equal(client.keyExpiry.days_left, 40);
+  assert.equal(seen.length, 0);
+  const { client: other } = setup([[200, OK]]);
+  await ask(other);
+  assert.equal(other.keyExpiry, undefined);
+});
+
+test("without a callback the client warns once on the console", async () => {
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (m) => warnings.push(m);
+  try {
+    const { client } = setup([[200, OK, { "Launchables-Key-Expires": inDays(3) }], [200, OK, { "Launchables-Key-Expires": inDays(3) }]]);
+    await ask(client); await ask(client);
+  } finally { console.warn = original; }
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /expires on .* \(3 days left\)/);
+});
+
+test("a failing callback never breaks the request; error responses carry the header too", async () => {
+  const { client } = setup([[402, { error: "out of credit", type: "out_of_credit" }, { "Launchables-Key-Expires": inDays(2) }]],
+    { onKeyExpiry: () => { throw new Error("boom"); } });
+  await assert.rejects(ask(client), OutOfCreditError);
+  assert.equal(client.keyExpiry.days_left, 2);
+});
+
+test("key() returns the calling key's details", async () => {
+  const info = { id: "c_1", name: "prod", expires_on: inDays(30), days_left: 30, workspace: null, rate_limit_per_minute: 60, daily_limit: 2000, paused: false };
+  const { client, calls } = setup([[200, info, { "Launchables-Key-Expires": inDays(30) }]]);
+  assert.deepEqual(await client.key(), info);
+  assert.equal(calls[0].url, "https://example.test/v1/key");
+  assert.equal(calls[0].method, "GET");
+  assert.equal(calls[0].headers.Authorization, "Bearer launchables_test");
+});
+
+test("key() needs an API key", async () => {
+  const saved = process.env.LAUNCHABLES_API_TOKEN;
+  delete process.env.LAUNCHABLES_API_TOKEN;
+  try {
+    const client = new Launchables({ baseURL: "https://example.test", fetch: async () => new Response("{}") });
+    await assert.rejects(client.key(), AuthenticationError);
+  } finally { if (saved !== undefined) process.env.LAUNCHABLES_API_TOKEN = saved; }
+});

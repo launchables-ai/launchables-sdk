@@ -6,13 +6,15 @@ import {
   errorForStatus,
 } from "./errors.js";
 import { validateQuestions, type Questions } from "./questions.js";
-import { parseResponse, type DecisionResponse, type Model } from "./types.js";
+import { parseResponse, type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { VERSION } from "./version.js";
 
 export const DEFAULT_BASE_URL = "https://api.launchables.ai";
 const RETRY_STATUSES = new Set([429, 502, 503]);
 const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
+/** Warn once when a key has this many days or fewer left. */
+export const KEY_EXPIRY_WARNING_DAYS = 14;
 
 export interface LaunchablesOptions {
   /** API token (starts with `launchables_`). Defaults to the LAUNCHABLES_API_TOKEN env var. Keep it on a server. */
@@ -29,6 +31,20 @@ export interface LaunchablesOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Allow constructing the client in a browser. Do not do this with a real key. */
   dangerouslyAllowBrowser?: boolean;
+  /**
+   * Called once per client when a response shows the key has 14 days or fewer left, so you can rotate it on time
+   * (for example, alert your team or start a rotation job). Without it, the client writes one console warning instead.
+   */
+  onKeyExpiry?: (expiry: KeyExpiry) => void;
+}
+
+/** Whole days from today (UTC) to a YYYY-MM-DD date, or undefined if it is not one. */
+function daysUntil(date: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
+  const end = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(end)) return undefined;
+  const now = new Date();
+  return Math.round((end - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) / 86_400_000);
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
@@ -44,6 +60,10 @@ export class Launchables {
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly onKeyExpiry: ((expiry: KeyExpiry) => void) | undefined;
+  private warnedExpiry = false;
+  /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
+  keyExpiry: KeyExpiry | undefined;
 
   constructor(options: LaunchablesOptions = {}) {
     const g = globalThis as { window?: unknown; document?: unknown };
@@ -61,6 +81,7 @@ export class Launchables {
     this.maxRetries = maxRetries;
     this.fetchImpl = options.fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.onKeyExpiry = options.onKeyExpiry;
   }
 
   /** Ask one or more questions about `state` (a string or a JSON object). */
@@ -69,12 +90,7 @@ export class Launchables {
     questions: Q,
     model?: string,
   ): Promise<DecisionResponse<Q>> {
-    const key = this.apiKey ?? process.env.LAUNCHABLES_API_TOKEN;
-    if (!key) {
-      throw new AuthenticationError(
-        "No API key. Pass { apiKey } or set the LAUNCHABLES_API_TOKEN environment variable.",
-      );
-    }
+    const key = this.requireKey();
     if (typeof state !== "string" && (typeof state !== "object" || state === null || Array.isArray(state))) {
       throw new ValidationError("state must be a string or a JSON object");
     }
@@ -84,8 +100,44 @@ export class Launchables {
   }
 
   async models(): Promise<Model[]> {
-    const data = await this.request("GET", "/v1/models");
+    // the key is optional here; when there is one, the response also tells the client when it expires
+    const data = await this.request("GET", "/v1/models", undefined, this.apiKey ?? process.env.LAUNCHABLES_API_TOKEN);
     return (data.data as Model[] | undefined) ?? [];
+  }
+
+  /**
+   * Details of the key this client uses: id, name, when it expires and how many days are left, its limits, and whether
+   * it is paused (and why). It counts as no request and no tokens.
+   */
+  async key(): Promise<KeyInfo> {
+    return (await this.request("GET", "/v1/key", undefined, this.requireKey())) as unknown as KeyInfo;
+  }
+
+  private requireKey(): string {
+    const key = this.apiKey ?? process.env.LAUNCHABLES_API_TOKEN;
+    if (!key) {
+      throw new AuthenticationError(
+        "No API key. Pass { apiKey } or set the LAUNCHABLES_API_TOKEN environment variable.",
+      );
+    }
+    return key;
+  }
+
+  /** Reads the key headers every response to a keyed request carries, and warns once when expiry is close. */
+  private noteKeyHeaders(headers: Headers): void {
+    const expires = headers.get("Launchables-Key-Expires");
+    if (!expires) return;
+    const days = daysUntil(expires);
+    if (days === undefined) return;
+    this.keyExpiry = { key_id: headers.get("Launchables-Key-Id"), expires_on: expires, days_left: days };
+    if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedExpiry) return;
+    this.warnedExpiry = true;
+    try {
+      if (this.onKeyExpiry) this.onKeyExpiry({ ...this.keyExpiry });
+      else console.warn(`Launchables: API key ${this.keyExpiry.key_id ?? ""} expires on ${expires} (${days} day${days === 1 ? "" : "s"} left). Roll it in the console to replace it without downtime.`);
+    } catch {
+      // a failing callback must never break the request it rode on
+    }
   }
 
   /** Returns the server's health payload, e.g. `{ status: "ok" }`. */
@@ -122,6 +174,7 @@ export class Launchables {
           signal: AbortSignal.timeout(this.timeout),
         });
         const text = await res.text();
+        if (key) this.noteKeyHeaders(res.headers);
         if (res.ok) return decode(text, res.status);
         const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
         retryAfterMs = retryAfter === undefined ? undefined : retryAfter * 1000;

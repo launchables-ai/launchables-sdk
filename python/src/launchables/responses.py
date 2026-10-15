@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,40 @@ class Model:
     id: str
     owned_by: str = ""
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class KeyInfo:
+    """The calling key, from ``client.key()``."""
+
+    id: str
+    name: Optional[str]
+    expires_on: Optional[str]  # the last day the key works (YYYY-MM-DD), or None if it never expires
+    days_left: Optional[int]
+    workspace: Optional[str]
+    rate_limit_per_minute: Optional[int]
+    daily_limit: Optional[int]
+    paused: bool
+    pause_reason: Optional[str] = None  # "credit", "budget" or "model" when paused
+    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class KeyExpiry:
+    """What the client last learnt about its key's expiry, from the response headers."""
+
+    key_id: Optional[str]
+    expires_on: str  # the last day the key works (YYYY-MM-DD)
+    days_left: int  # whole days from today (UTC); 0 on the last day
+
+
+def parse_key_info(data: Dict[str, Any]) -> KeyInfo:
+    return KeyInfo(
+        id=str(data.get("id", "")), name=data.get("name"), expires_on=data.get("expires_on"),
+        days_left=data.get("days_left"), workspace=data.get("workspace"),
+        rate_limit_per_minute=data.get("rate_limit_per_minute"), daily_limit=data.get("daily_limit"),
+        paused=bool(data.get("paused", False)), pause_reason=data.get("pause_reason"), raw=data,
+    )
 
 
 def parse_answer(data: Dict[str, Any]) -> Answer:
