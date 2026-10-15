@@ -81,7 +81,7 @@ class Launchables:
         self.max_retries = max_retries
         self.on_key_expiry = on_key_expiry
         self.key_expiry: Optional[KeyExpiry] = None  # the key's expiry as last seen in a response
-        self._warned_for: Optional[str] = None  # the key and expiry last warned about: once per key and date
+        self._warned_for: set = set()  # every key and expiry date warned about: once per pair
 
     # -- public API --------------------------------------------------------
 
@@ -138,9 +138,9 @@ class Launchables:
             return
         self.key_expiry = KeyExpiry(key_id=headers.get("Launchables-Key-Id"), expires_on=expires, days_left=days)
         which = f"{self.key_expiry.key_id or ''}|{expires}"
-        if days > KEY_EXPIRY_WARNING_DAYS or self._warned_for == which:
+        if days > KEY_EXPIRY_WARNING_DAYS or which in self._warned_for:
             return
-        self._warned_for = which
+        self._warned_for.add(which)
         try:
             if self.on_key_expiry is not None:
                 self.on_key_expiry(self.key_expiry)

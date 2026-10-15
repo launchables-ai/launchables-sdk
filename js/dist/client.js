@@ -32,7 +32,7 @@ export class Launchables {
     fetchImpl;
     sleep;
     onKeyExpiry;
-    warnedFor; // the key and expiry last warned about: once per key and date
+    warnedFor = new Set(); // every key and expiry date warned about: once per pair
     /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
     keyExpiry;
     constructor(options = {}) {
@@ -92,9 +92,9 @@ export class Launchables {
             return;
         this.keyExpiry = { key_id: headers.get("Launchables-Key-Id"), expires_on: expires, days_left: days };
         const which = `${this.keyExpiry.key_id ?? ""}|${expires}`;
-        if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedFor === which)
+        if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedFor.has(which))
             return;
-        this.warnedFor = which;
+        this.warnedFor.add(which);
         try {
             if (this.onKeyExpiry) {
                 const result = this.onKeyExpiry({ ...this.keyExpiry });

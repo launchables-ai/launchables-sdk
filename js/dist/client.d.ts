@@ -32,7 +32,7 @@ export declare class Launchables {
     private readonly fetchImpl;
     private readonly sleep;
     private readonly onKeyExpiry;
-    private warnedFor;
+    private readonly warnedFor;
     /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
     keyExpiry: KeyExpiry | undefined;
     constructor(options?: LaunchablesOptions);

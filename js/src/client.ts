@@ -61,7 +61,7 @@ export class Launchables {
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly onKeyExpiry: ((expiry: KeyExpiry) => void | Promise<void>) | undefined;
-  private warnedFor: string | undefined; // the key and expiry last warned about: once per key and date
+  private readonly warnedFor = new Set<string>(); // every key and expiry date warned about: once per pair
   /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
   keyExpiry: KeyExpiry | undefined;
 
@@ -131,8 +131,8 @@ export class Launchables {
     if (days === undefined) return;
     this.keyExpiry = { key_id: headers.get("Launchables-Key-Id"), expires_on: expires, days_left: days };
     const which = `${this.keyExpiry.key_id ?? ""}|${expires}`;
-    if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedFor === which) return;
-    this.warnedFor = which;
+    if (days > KEY_EXPIRY_WARNING_DAYS || this.warnedFor.has(which)) return;
+    this.warnedFor.add(which);
     try {
       if (this.onKeyExpiry) {
         const result = this.onKeyExpiry({ ...this.keyExpiry });
