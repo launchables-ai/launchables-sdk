@@ -496,6 +496,12 @@ class AdminKeysTests(Base):
         self.assertEqual(len(self.server.requests), 4)
         self.assertEqual(self.sleeps, [0.5, 0.5])
 
+    def test_an_empty_admin_url_never_falls_back_to_the_decision_api(self):
+        client = Launchables(base_url=self.server.url, admin_key=ADMIN, admin_base_url="")
+        with self.assertRaises(Exception):
+            client.admin.keys.list()
+        self.assertEqual(self.server.requests, [])
+
     def test_console_responses_never_set_the_api_keys_expiry(self):
         self.reply(200, {"data": [], "has_more": False, "next_before": None}, {"Launchables-Key-Expires": "2026-10-16"})
         self.admin.admin.keys.list()

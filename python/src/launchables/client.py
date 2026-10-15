@@ -189,7 +189,7 @@ class Launchables:
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        base_url = base_url or self.base_url
+        base_url = self.base_url if base_url is None else base_url  # never the Decision API for an admin call
         url = base_url + path
         # a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never
         # makes two keys
