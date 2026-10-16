@@ -606,6 +606,13 @@ class ImageTests(Base):
             with self.assertRaises(ValidationError):
                 launchables.Image.from_path(p, format="jpeg")
 
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_from_path_reads_no_more_than_the_limit(self):
+        # a device reports no size and never ends; the read stops one byte past 16 MiB and the image is refused
+        with self.assertRaises(ValidationError) as cm:
+            launchables.Image.from_path("/dev/zero")
+        self.assertIn("16 MiB", str(cm.exception))
+
     def test_image_error_types_are_exposed(self):
         for status, type_ in ((400, "unsupported_image_format"), (400, "image_dimensions"),
                               (400, "unreferenced_asset"), (422, "invalid_image_budget")):

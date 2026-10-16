@@ -142,7 +142,7 @@ export class Launchables {
       throw new ValidationError("state must be a string or a JSON object");
     }
     const opts: DecideOptions = typeof modelOrOptions === "string" ? { model: modelOrOptions } : (modelOrOptions ?? {});
-    if (typeof opts !== "object" || opts === null) throw new ValidationError("the third argument must be a model name or options");
+    if (typeof opts !== "object" || opts === null || Array.isArray(opts)) throw new ValidationError("the third argument must be a model name or options");
     const body: Record<string, unknown> = { state, questions: validateQuestions(questions) };
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.assets !== undefined) body.assets = validateAssets(opts.assets);

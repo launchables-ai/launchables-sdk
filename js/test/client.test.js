@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
   Launchables, noul, choice, score, NoulAnswer, VERSION,
   LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError,
@@ -535,6 +536,17 @@ test("images: imageFromPath reads the file and detects from the bytes", async ()
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("images: imageFromPath reads no more than the limit", { skip: !existsSync("/dev/zero") }, async () => {
+  // a device reports no size and never ends; the read stops one byte past 16 MiB and the image is refused
+  await assert.rejects(imageFromPath("/dev/zero"), (e) => e instanceof ValidationError && /16 MiB/.test(e.message));
+});
+
+test("images: an array is not options", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(client.decide("s", { q: noul("x") }, ["m"]), ValidationError);
+  assert.equal(calls.length, 0);
 });
 
 for (const [status, type] of [[400, "unsupported_image_format"], [400, "image_dimensions"], [400, "unreferenced_asset"], [422, "invalid_image_budget"]]) {

@@ -75,12 +75,15 @@ export function imageFromBytes(bytes: Uint8Array | ArrayBuffer, format?: ImageFo
 
 /** An image read from a file (Node). Without `format`, it is detected from the bytes (PNG or JPEG), not the file name. */
 export async function imageFromPath(path: string, format?: ImageFormat): Promise<ImageAsset> {
-  const fs = await import("node:fs/promises");
-  const { size } = await fs.stat(path);
+  const fs = await import("node:fs");
+  const { size } = await fs.promises.stat(path);
   if (size > MAX_IMAGE_BYTES) {
     throw new ValidationError(`${path} is ${size} bytes; the most the API accepts is ${MAX_IMAGE_BYTES} (16 MiB)`);
   }
-  return imageFromBytes(await fs.readFile(path), format);
+  // read at most one byte past the limit (`end` is inclusive), so a file that grew, or a device with no size, is still refused
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of fs.createReadStream(path, { start: 0, end: MAX_IMAGE_BYTES })) chunks.push(chunk as Uint8Array);
+  return imageFromBytes(Buffer.concat(chunks), format);
 }
 
 /** Check a { reference: image } object before it is sent. Objects are sent as they are. */

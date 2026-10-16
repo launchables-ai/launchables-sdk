@@ -82,7 +82,8 @@ class Image:
         if size > MAX_IMAGE_BYTES:
             raise ValidationError(f"{os.fspath(path)} is {size} bytes; the most the API accepts is {MAX_IMAGE_BYTES} (16 MiB)")
         with open(path, "rb") as f:
-            return cls(f.read(), format)
+            # read one byte past the limit, so a file that grew, or a device with no size, is still refused
+            return cls(f.read(MAX_IMAGE_BYTES + 1), format)
 
     def to_dict(self) -> Dict[str, str]:
         """The asset as sent: ``{"type": "image", "format": ..., "data_base64": ...}``."""
