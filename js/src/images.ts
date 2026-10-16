@@ -40,6 +40,7 @@ function toBase64(data: Uint8Array): string {
   return btoa(s);
 }
 
+const isArrayBuffer = (v: unknown): v is ArrayBuffer => Object.prototype.toString.call(v) === "[object ArrayBuffer]";
 const isJpeg = (f: string) => f === "jpg" || f === "jpeg";
 const sameFormat = (a: string, b: string) => a === b || (isJpeg(a) && isJpeg(b));
 
@@ -48,8 +49,11 @@ const sameFormat = (a: string, b: string) => a === b || (isJpeg(a) && isJpeg(b))
  * (PNG or JPEG). Anything else is refused. The bytes are sent as they are: never resized or re-encoded.
  */
 export function imageFromBytes(bytes: Uint8Array | ArrayBuffer, format?: ImageFormat): ImageAsset {
-  const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
-  if (!(data instanceof Uint8Array)) throw new ValidationError("image data must be a Uint8Array, Buffer or ArrayBuffer");
+  // realm-independent checks, so bytes made in another context (node:vm, a worker's realm) are accepted too
+  let data: Uint8Array;
+  if (ArrayBuffer.isView(bytes)) data = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  else if (isArrayBuffer(bytes)) data = new Uint8Array(bytes);
+  else throw new ValidationError("image data must be a Uint8Array, Buffer or ArrayBuffer");
   if (data.byteLength > MAX_IMAGE_BYTES) {
     throw new ValidationError(`image is ${data.byteLength} bytes; the most the API accepts is ${MAX_IMAGE_BYTES} (16 MiB)`);
   }
@@ -93,7 +97,7 @@ export function validateAssets(assets: unknown): Assets {
   }
   for (const [ref, value] of Object.entries(assets)) {
     if (ref === "") throw new ValidationError("asset references must be non-empty strings");
-    if (typeof value !== "object" || value === null || Array.isArray(value) || value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    if (typeof value !== "object" || value === null || Array.isArray(value) || ArrayBuffer.isView(value) || isArrayBuffer(value)) {
       throw new ValidationError(
         `asset "${ref}" must be an image object (imageFromBytes or imageFromPath, or { type: "image", format, data_base64 })`,
       );

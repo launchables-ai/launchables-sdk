@@ -507,6 +507,13 @@ test("images: format detected from the bytes", () => {
   assert.equal(detectImageFormat(new TextEncoder().encode("GIF89a")), undefined);
 });
 
+test("images: bytes made in another realm are accepted", async () => {
+  const vm = await import("node:vm");
+  const ctx = vm.createContext({ src: Array.from(PNG) });
+  assert.equal(imageFromBytes(vm.runInContext("new Uint8Array(src)", ctx)).data_base64, b64(PNG));
+  assert.equal(imageFromBytes(vm.runInContext("new Uint8Array(src).buffer", ctx)).format, "png");
+});
+
 test("images: unknown or mismatched formats are refused", () => {
   const gif = new TextEncoder().encode("GIF89a\0\0\0\0");
   const webp = new TextEncoder().encode("RIFF\0\0\0\0WEBP");
