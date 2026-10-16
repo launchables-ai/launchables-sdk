@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Images. `decide` takes `assets`, a map of reference to image; the model sees the image wherever the reference appears in the state, a question's instructions or a criterion's description. Every asset must be referenced at least once.
+- Image helpers that read PNG and JPEG files as they are (never resized): `Image.from_path` and `Image.from_bytes` in Python, `imageFromPath` (Node) and `imageFromBytes` in JavaScript. They detect the format from the file's first bytes and refuse anything else, or anything over 16 MiB, before sending. A plain object in the wire shape `{"type": "image", "format", "data_base64"}` is sent as it is.
+- `image_budget` (Python) and `imageBudget` (JavaScript): 70, 140 or 280, the most visual tokens one image may use. Any other value raises `ValidationError`; when it is not given the server default (280) applies.
+- In JavaScript the third argument of `decide` may now be options `{ model, assets, imageBudget }`; a model name still works.
+- Image errors are `InvalidRequestError`s whose `type` says what was wrong: `invalid_assets`, `unsupported_image_format`, `invalid_image`, `image_too_large`, `image_dimensions`, `too_many_images`, `unreferenced_asset`, `image_reference_truncated` (400) or `invalid_image_budget` (422).
+
 ## 0.3.0
 
 - `client.admin.keys` manages your organisation's API keys through the key management API: `list` (a page at a time, newest first), `listAll` / `list_all` (every key), `create`, `roll` and `revoke`. It needs an admin key, which an owner makes on the API keys page of the console.

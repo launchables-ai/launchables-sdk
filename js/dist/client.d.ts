@@ -1,10 +1,26 @@
 import { type Questions } from "./questions.js";
+import { type Assets, type ImageBudget } from "./images.js";
 import { type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { AdminKeys } from "./admin.js";
 export declare const DEFAULT_BASE_URL = "https://api.launchables.ai";
 export declare const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 /** Warn once when a key has this many days or fewer left. */
 export declare const KEY_EXPIRY_WARNING_DAYS = 14;
+export interface DecideOptions {
+    /** The model to ask. Defaults to the server's default. */
+    model?: string;
+    /**
+     * Images, by reference: `{ receipt_photo: await imageFromPath("receipt.jpg") }`. Wherever the reference appears as text
+     * in the state (any string value), a question's instructions or a criterion's description, the model sees the image
+     * there. Option labels are not searched. Every asset must be referenced at least once.
+     */
+    assets?: Assets;
+    /**
+     * The most visual tokens one image may use: 70, 140 or 280. The server uses 280 when it is not given. Lower is cheaper
+     * and faster but sees less detail.
+     */
+    imageBudget?: ImageBudget;
+}
 export interface LaunchablesOptions {
     /** API token (starts with `launchables_`). Defaults to the LAUNCHABLES_API_TOKEN env var. Keep it on a server. */
     apiKey?: string;
@@ -51,8 +67,11 @@ export declare class Launchables {
     /** The key's expiry as last seen in a response (undefined until a response carries it, or if the key never expires). */
     keyExpiry: KeyExpiry | undefined;
     constructor(options?: LaunchablesOptions);
-    /** Ask one or more questions about `state` (a string or a JSON object). */
-    decide<Q extends Questions>(state: string | Record<string, unknown>, questions: Q, model?: string): Promise<DecisionResponse<Q>>;
+    /**
+     * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
+     * `{ model, assets, imageBudget }`.
+     */
+    decide<Q extends Questions>(state: string | Record<string, unknown>, questions: Q, modelOrOptions?: string | DecideOptions): Promise<DecisionResponse<Q>>;
     models(): Promise<Model[]>;
     /**
      * Details of the key this client uses: id, name, when it expires and how many days are left, its limits, and whether

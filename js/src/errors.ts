@@ -43,7 +43,12 @@ export class RateLimitError extends LaunchablesError {
   }
 }
 
-/** 400, 411, 413, 422 (and any other 4xx): the request cannot be answered. */
+/**
+ * 400, 411, 413, 422 (and any other 4xx): the request cannot be answered. For an image, `type` says what was wrong:
+ * "invalid_assets", "unsupported_image_format", "invalid_image", "image_too_large", "image_dimensions",
+ * "too_many_images", "unreferenced_asset" or "image_reference_truncated" (400), or "invalid_image_budget" (422). The
+ * message names the asset.
+ */
 export class InvalidRequestError extends LaunchablesError {}
 
 /** 404: no such key or workspace in your organisation (key management API). */

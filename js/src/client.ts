@@ -6,6 +6,7 @@ import {
   errorForStatus,
 } from "./errors.js";
 import { validateQuestions, type Questions } from "./questions.js";
+import { validateAssets, validateImageBudget, type Assets, type ImageBudget } from "./images.js";
 import { parseResponse, type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { VERSION } from "./version.js";
 import { AdminKeys } from "./admin.js";
@@ -17,6 +18,22 @@ const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
 /** Warn once when a key has this many days or fewer left. */
 export const KEY_EXPIRY_WARNING_DAYS = 14;
+
+export interface DecideOptions {
+  /** The model to ask. Defaults to the server's default. */
+  model?: string;
+  /**
+   * Images, by reference: `{ receipt_photo: await imageFromPath("receipt.jpg") }`. Wherever the reference appears as text
+   * in the state (any string value), a question's instructions or a criterion's description, the model sees the image
+   * there. Option labels are not searched. Every asset must be referenced at least once.
+   */
+  assets?: Assets;
+  /**
+   * The most visual tokens one image may use: 70, 140 or 280. The server uses 280 when it is not given. Lower is cheaper
+   * and faster but sees less detail.
+   */
+  imageBudget?: ImageBudget;
+}
 
 export interface LaunchablesOptions {
   /** API token (starts with `launchables_`). Defaults to the LAUNCHABLES_API_TOKEN env var. Keep it on a server. */
@@ -111,18 +128,25 @@ export class Launchables {
     this.onKeyExpiry = options.onKeyExpiry;
   }
 
-  /** Ask one or more questions about `state` (a string or a JSON object). */
+  /**
+   * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
+   * `{ model, assets, imageBudget }`.
+   */
   async decide<Q extends Questions>(
     state: string | Record<string, unknown>,
     questions: Q,
-    model?: string,
+    modelOrOptions?: string | DecideOptions,
   ): Promise<DecisionResponse<Q>> {
     const key = this.requireKey();
     if (typeof state !== "string" && (typeof state !== "object" || state === null || Array.isArray(state))) {
       throw new ValidationError("state must be a string or a JSON object");
     }
+    const opts: DecideOptions = typeof modelOrOptions === "string" ? { model: modelOrOptions } : (modelOrOptions ?? {});
+    if (typeof opts !== "object" || opts === null || Array.isArray(opts)) throw new ValidationError("the third argument must be a model name or options");
     const body: Record<string, unknown> = { state, questions: validateQuestions(questions) };
-    if (model !== undefined) body.model = model;
+    if (opts.model !== undefined) body.model = opts.model;
+    if (opts.assets !== undefined) body.assets = validateAssets(opts.assets);
+    if (opts.imageBudget !== undefined) body.image_budget = validateImageBudget(opts.imageBudget);
     return parseResponse<Q>(await this.request("POST", "/v1/decide", body, key));
   }
 

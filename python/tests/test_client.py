@@ -522,3 +522,102 @@ class NoulDecideTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 20
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+
+
+class ImageTests(Base):
+    """0.4.0: assets, image_budget and the Image helper."""
+
+    def test_assets_and_budget_are_sent(self):
+        import base64
+        self.reply(200, {"model": "m", "answers": {"q": NOUL}, "usage": {"input_tokens": 300, "output_tokens": 1}})
+        r = self.client.decide(
+            {"receipt": "receipt_photo"}, {"q": noul("Does the total on receipt_photo equal 23.40?")},
+            assets={"receipt_photo": launchables.Image.from_bytes(JPEG)}, image_budget=140,
+        )
+        self.assertEqual(r.usage.input_tokens, 300)
+        body = self.server.requests[0]["body"]
+        self.assertEqual(body["assets"], {"receipt_photo": {
+            "type": "image", "format": "jpeg", "data_base64": base64.b64encode(JPEG).decode()}})
+        self.assertEqual(body["image_budget"], 140)
+        self.assertEqual(set(body), {"state", "questions", "assets", "image_budget"})
+
+    def test_no_assets_or_budget_means_neither_is_sent(self):
+        self.reply(200, {"model": "m", "answers": {"q": NOUL}})
+        self.ask()
+        self.assertEqual(set(self.server.requests[0]["body"]), {"state", "questions"})
+
+    def test_a_plain_dict_is_sent_as_is(self):
+        self.reply(200, {"model": "m", "answers": {"q": NOUL}})
+        asset = {"format": "png", "data_base64": "AAAA"}
+        self.client.decide("see img", {"q": noul("img ok?")}, assets={"img": asset})
+        body = self.server.requests[0]["body"]
+        self.assertEqual(body["assets"], {"img": asset})
+        self.assertNotIn("image_budget", body)
+
+    def test_budget_must_be_70_140_or_280(self):
+        for bad in (0, 100, 281, "280", 280.0, True, -1):
+            with self.assertRaises(ValidationError) as cm:
+                self.client.decide("img", {"q": noul("x")}, assets={"img": launchables.Image.from_bytes(PNG)}, image_budget=bad)
+            self.assertIn("70, 140, 280", str(cm.exception))
+        for good in (70, 140, 280):
+            self.reply(200, {"model": "m", "answers": {"q": NOUL}})
+            self.client.decide("s", {"q": noul("x")}, image_budget=good)
+            self.assertEqual(self.server.requests[-1]["body"]["image_budget"], good)
+
+    def test_bad_assets_are_refused_before_sending(self):
+        for bad in ([("img", PNG)], {"": launchables.Image.from_bytes(PNG)}, {"img": PNG}, {"img": "AAAA"}):
+            with self.assertRaises(ValidationError):
+                self.client.decide("img", {"q": noul("x")}, assets=bad)
+        self.assertEqual(self.server.requests, [])
+
+    def test_format_is_detected_from_the_bytes(self):
+        self.assertEqual(launchables.Image.from_bytes(PNG).format, "png")
+        self.assertEqual(launchables.Image.from_bytes(bytearray(JPEG)).format, "jpeg")
+        self.assertEqual(launchables.Image.from_bytes(JPEG, format="JPG").to_dict()["format"], "jpg")
+        self.assertEqual(launchables.Image.from_bytes(PNG, format="png").to_dict()["type"], "image")
+
+    def test_unknown_or_mismatched_formats_are_refused(self):
+        for data, fmt in ((b"GIF89a" + b"\x00" * 10, None), (b"RIFF\x00\x00\x00\x00WEBP", None), (b"", None),
+                          (PNG, "gif"), (PNG, "jpeg"), (JPEG, "png"), (b"GIF89a", "png")):
+            with self.assertRaises(ValidationError):
+                launchables.Image.from_bytes(data, format=fmt)
+        with self.assertRaises(ValidationError):
+            launchables.Image.from_bytes("not bytes")
+
+    def test_over_16_mib_is_refused(self):
+        launchables.Image.from_bytes(PNG + b"\x00" * (launchables.MAX_IMAGE_BYTES - len(PNG)))
+        with self.assertRaises(ValidationError) as cm:
+            launchables.Image.from_bytes(PNG + b"\x00" * (launchables.MAX_IMAGE_BYTES - len(PNG) + 1))
+        self.assertIn("16 MiB", str(cm.exception))
+
+    def test_from_path(self):
+        import base64
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "photo.bin")  # the name does not decide the format
+            with open(p, "wb") as f:
+                f.write(PNG)
+            img = launchables.Image.from_path(p)
+            self.assertEqual(img.to_dict(), {"type": "image", "format": "png", "data_base64": base64.b64encode(PNG).decode()})
+            with self.assertRaises(ValidationError):
+                launchables.Image.from_path(p, format="jpeg")
+
+    @unittest.skipUnless(os.path.exists("/dev/zero"), "needs /dev/zero")
+    def test_from_path_reads_no_more_than_the_limit(self):
+        # a device reports no size and never ends; the read stops one byte past 16 MiB and the image is refused
+        with self.assertRaises(ValidationError) as cm:
+            launchables.Image.from_path("/dev/zero")
+        self.assertIn("16 MiB", str(cm.exception))
+
+    def test_image_error_types_are_exposed(self):
+        for status, type_ in ((400, "unsupported_image_format"), (400, "image_dimensions"),
+                              (400, "unreferenced_asset"), (422, "invalid_image_budget")):
+            self.reply(status, {"error": f"asset 'img': {type_}", "type": type_})
+            with self.assertRaises(InvalidRequestError) as cm:
+                self.client.decide("img", {"q": noul("x")}, assets={"img": launchables.Image.from_bytes(PNG)})
+            self.assertEqual((cm.exception.status, cm.exception.type), (status, type_))
+            self.assertIn("asset 'img'", cm.exception.message)

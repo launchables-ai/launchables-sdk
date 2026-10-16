@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import {
   Launchables, noul, choice, score, NoulAnswer, VERSION,
   LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError,
   InvalidRequestError, ValidationError, APIError, APIConnectionError, NotFoundError, ConflictError, DEFAULT_ADMIN_BASE_URL,
+  imageFromBytes, imageFromPath, detectImageFormat, MAX_IMAGE_BYTES,
 } from "../dist/index.js";
 
 const NOUL = { type: "noul", noul: 0.04 };
@@ -437,3 +439,133 @@ test("admin: console responses never set the API key's expiry", async () => {
   await client.admin.keys.list();
   assert.equal(client.keyExpiry, undefined);
 });
+
+// 0.4.0: assets, imageBudget and the image helpers
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0]);
+const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0, 0]);
+const b64 = (u8) => Buffer.from(u8).toString("base64");
+
+test("images: assets and imageBudget are sent", async () => {
+  const { client, calls } = setup([[200, { model: "m", answers: { q: NOUL }, usage: { input_tokens: 300, output_tokens: 1 } }]]);
+  const r = await client.decide(
+    { receipt: "receipt_photo" }, { q: noul("Does the total on receipt_photo equal 23.40?") },
+    { model: "m", assets: { receipt_photo: imageFromBytes(JPEG) }, imageBudget: 140 },
+  );
+  assert.equal(r.usage.input_tokens, 300);
+  assert.deepEqual(calls[0].json, {
+    state: { receipt: "receipt_photo" },
+    questions: { q: { type: "noul", instructions: "Does the total on receipt_photo equal 23.40?" } },
+    model: "m",
+    assets: { receipt_photo: { type: "image", format: "jpeg", data_base64: b64(JPEG) } },
+    image_budget: 140,
+  });
+});
+
+test("images: a model string still works and nothing extra is sent", async () => {
+  const { client, calls } = setup([[200, { model: "m", answers: { q: NOUL } }], [200, { model: "m", answers: { q: NOUL } }]]);
+  await client.decide("s", { q: noul("x") }, "m");
+  await client.decide("s", { q: noul("x") }, {});
+  assert.deepEqual(Object.keys(calls[0].json).sort(), ["model", "questions", "state"]);
+  assert.deepEqual(Object.keys(calls[1].json).sort(), ["questions", "state"]);
+});
+
+test("images: a plain object is sent as is", async () => {
+  const { client, calls } = setup([[200, { model: "m", answers: { q: NOUL } }]]);
+  const asset = { format: "png", data_base64: "AAAA" };
+  await client.decide("see img", { q: noul("img ok?") }, { assets: { img: asset } });
+  assert.deepEqual(calls[0].json.assets, { img: asset });
+  assert.equal("image_budget" in calls[0].json, false);
+});
+
+test("images: imageBudget must be 70, 140 or 280", async () => {
+  const { client, calls } = setup([[200, { model: "m", answers: { q: NOUL } }], [200, { model: "m", answers: { q: NOUL } }], [200, { model: "m", answers: { q: NOUL } }]]);
+  for (const bad of [0, 100, 281, "280", null, true]) {
+    await assert.rejects(client.decide("s", { q: noul("x") }, { imageBudget: bad }), (e) => e instanceof ValidationError && /70, 140, 280/.test(e.message));
+  }
+  assert.equal(calls.length, 0);
+  for (const good of [70, 140, 280]) await client.decide("s", { q: noul("x") }, { imageBudget: good });
+  assert.deepEqual(calls.map((c) => c.json.image_budget), [70, 140, 280]);
+});
+
+test("images: bad assets are refused before sending", async () => {
+  const { client, calls } = setup([]);
+  for (const bad of [[["img", "AAAA"]], { "": imageFromBytes(PNG) }, { img: PNG }, { img: "AAAA" }, { img: null }, "img"]) {
+    await assert.rejects(client.decide("img", { q: noul("x") }, { assets: bad }), ValidationError);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("images: format detected from the bytes", () => {
+  assert.deepEqual(imageFromBytes(PNG), { type: "image", format: "png", data_base64: b64(PNG) });
+  assert.equal(imageFromBytes(Buffer.from(JPEG)).format, "jpeg");
+  assert.equal(imageFromBytes(JPEG.buffer.slice(0)).format, "jpeg");
+  assert.equal(imageFromBytes(JPEG, "jpg").format, "jpg");
+  assert.equal(imageFromBytes(PNG, "PNG").format, "png");
+  // a view into a larger buffer encodes only its own bytes
+  const big = new Uint8Array(4 + PNG.length); big.set(PNG, 4);
+  assert.equal(imageFromBytes(big.subarray(4)).data_base64, b64(PNG));
+  assert.equal(detectImageFormat(new TextEncoder().encode("GIF89a")), undefined);
+});
+
+test("images: bytes made in another realm are accepted", async () => {
+  const vm = await import("node:vm");
+  const ctx = vm.createContext({ src: Array.from(PNG) });
+  assert.equal(imageFromBytes(vm.runInContext("new Uint8Array(src)", ctx)).data_base64, b64(PNG));
+  assert.equal(imageFromBytes(vm.runInContext("new Uint8Array(src).buffer", ctx)).format, "png");
+});
+
+test("images: unknown or mismatched formats are refused", () => {
+  const gif = new TextEncoder().encode("GIF89a\0\0\0\0");
+  const webp = new TextEncoder().encode("RIFF\0\0\0\0WEBP");
+  for (const [data, fmt] of [[gif], [webp], [new Uint8Array(0)], [PNG, "gif"], [PNG, "jpeg"], [JPEG, "png"], [gif, "png"]]) {
+    assert.throws(() => imageFromBytes(data, fmt), ValidationError);
+  }
+  assert.throws(() => imageFromBytes("not bytes"), ValidationError);
+});
+
+test("images: over 16 MiB is refused", () => {
+  const ok = new Uint8Array(MAX_IMAGE_BYTES); ok.set(PNG);
+  assert.equal(imageFromBytes(ok).format, "png");
+  const over = new Uint8Array(MAX_IMAGE_BYTES + 1); over.set(PNG);
+  assert.throws(() => imageFromBytes(over), (e) => e instanceof ValidationError && /16 MiB/.test(e.message));
+});
+
+test("images: imageFromPath reads the file and detects from the bytes", async () => {
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "launchables-"));
+  try {
+    const p = join(dir, "photo.bin"); // the name does not decide the format
+    await writeFile(p, PNG);
+    assert.deepEqual(await imageFromPath(p), { type: "image", format: "png", data_base64: b64(PNG) });
+    await assert.rejects(imageFromPath(p, "jpeg"), ValidationError);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("images: imageFromPath reads no more than the limit", { skip: !existsSync("/dev/zero") }, async () => {
+  // a device reports no size and never ends; the read stops one byte past 16 MiB and the image is refused
+  await assert.rejects(imageFromPath("/dev/zero"), (e) => e instanceof ValidationError && /16 MiB/.test(e.message));
+});
+
+test("images: an array is not options", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(client.decide("s", { q: noul("x") }, ["m"]), ValidationError);
+  assert.equal(calls.length, 0);
+});
+
+for (const [status, type] of [[400, "unsupported_image_format"], [400, "image_dimensions"], [400, "unreferenced_asset"], [422, "invalid_image_budget"]]) {
+  test(`images: HTTP ${status} ${type} -> InvalidRequestError with type`, async () => {
+    const { client, calls } = setup([[status, { error: `asset 'img': ${type}`, type }]]);
+    await assert.rejects(client.decide("img", { q: noul("x") }, { assets: { img: imageFromBytes(PNG) } }), (e) => {
+      assert.ok(e instanceof InvalidRequestError);
+      assert.equal(e.status, status);
+      assert.equal(e.type, type);
+      assert.match(e.serverMessage, /asset 'img'/);
+      return true;
+    });
+    assert.equal(calls.length, 1);
+  });
+}
