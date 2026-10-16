@@ -26,7 +26,7 @@ console.log(answer.decide({ thresholdYes: 0.9, thresholdNo: 0.1 })); // "yes" | 
 console.log(resp.usage.input_tokens, resp.model);
 ```
 
-`decide(state, questions, model?)` returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
+`decide(state, questions, model?)` (or `decide(state, questions, { model, assets, imageBudget })`, see [Images](#images)) returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
 
 ### Question types
 
@@ -55,6 +55,38 @@ await client.health(); // { status: "ok" }
 ```
 
 `models()` and `health()` need no token.
+
+## Images
+
+Pass images in `assets`, keyed by a reference of your choosing, and write that reference wherever the model should see the image: in the state (a text state, or any string value in a JSON state), a question's instructions, or a criterion's description. Option labels are not searched.
+
+```ts
+import { Launchables, noul, imageFromPath, imageFromBytes } from "launchables";
+
+const client = new Launchables();
+
+const resp = await client.decide(
+  { receipt: "receipt_photo", note: "Customer asks for a refund" },
+  { total_matches: noul("Does the total printed on receipt_photo equal 23.40?") },
+  {
+    assets: { receipt_photo: await imageFromPath("receipt.jpg") }, // or imageFromBytes(uint8ArrayOrBuffer)
+    imageBudget: 140, // optional: 70, 140 or 280 (the default)
+  },
+);
+```
+
+The third argument of `decide` is a model name or options `{ model, assets, imageBudget }`. `imageFromBytes(bytes)` (a `Uint8Array`, `Buffer` or `ArrayBuffer`) and `imageFromPath(path)` (Node) detect PNG or JPEG from the file's first bytes; pass `"png"`, `"jpg"` or `"jpeg"` as the second argument to state it (it must match the bytes). A plain object in the wire shape, `{ type: "image", format: "jpeg", data_base64: "..." }`, is accepted as it is. References are matched as plain, case-sensitive text; every place a reference appears shows the image there, and when one reference contains another the longer one wins.
+
+`imageBudget` is the most visual tokens one image may use. Lower is cheaper and faster but sees less detail (small print suffers first). Any value other than 70, 140 or 280 throws `ValidationError` before sending; leave it out to get the server default of 280.
+
+Limits, checked by the server (each breach is an `InvalidRequestError` whose message names the asset):
+
+- PNG or JPEG only, still images, and the bytes must match the format. The helper detects the format from the bytes and refuses anything else before sending.
+- At most 16 MiB per image (the helper checks this too). Width and height each from 280 to 1568 pixels. Images are never resized or re-encoded, by the client or the server, so resize larger images yourself first.
+- At most 8 assets per request, and at most 8 images shown in any one question (each use of a reference counts).
+- Every asset must be referenced at least once. A reference inside a text state must fall within its first 20,000 characters.
+
+Images count as input tokens and are included in `usage.input_tokens`. At budget 280 one image costs up to about 280 tokens, at 140 up to about 140, at 70 up to about 70. An image referenced in the state is billed once per request however many questions read it; one referenced in a question's instructions or criteria is billed for that question, once per use.
 
 ## Key expiry
 
@@ -108,7 +140,7 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 | `OutOfCreditError` | 402: the account has run out of prepaid credit (`.type` `"out_of_credit"`, top up in the console), or the key's workspace has reached its monthly budget (`.type` `"budget_exceeded"`) |
 | `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`), or the admin key's maker is no longer an owner |
 | `RateLimitError` | 429 (`.retryAfter` seconds, if sent) |
-| `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass |
+| `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass. `.type` says what was wrong with an image: `"invalid_assets"`, `"unsupported_image_format"`, `"invalid_image"`, `"image_too_large"`, `"image_dimensions"`, `"too_many_images"`, `"unreferenced_asset"` or `"image_reference_truncated"` (400), or `"invalid_image_budget"` (422). |
 | `NotFoundError`, `ConflictError` | 404 and 409 from the key management API (subclasses of `InvalidRequestError`) |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |

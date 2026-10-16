@@ -1,5 +1,6 @@
 import { APIConnectionError, AuthenticationError, LaunchablesError, ValidationError, errorForStatus, } from "./errors.js";
 import { validateQuestions } from "./questions.js";
+import { validateAssets, validateImageBudget } from "./images.js";
 import { parseResponse } from "./types.js";
 import { VERSION } from "./version.js";
 import { AdminKeys } from "./admin.js";
@@ -70,15 +71,25 @@ export class Launchables {
         this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
         this.onKeyExpiry = options.onKeyExpiry;
     }
-    /** Ask one or more questions about `state` (a string or a JSON object). */
-    async decide(state, questions, model) {
+    /**
+     * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
+     * `{ model, assets, imageBudget }`.
+     */
+    async decide(state, questions, modelOrOptions) {
         const key = this.requireKey();
         if (typeof state !== "string" && (typeof state !== "object" || state === null || Array.isArray(state))) {
             throw new ValidationError("state must be a string or a JSON object");
         }
+        const opts = typeof modelOrOptions === "string" ? { model: modelOrOptions } : (modelOrOptions ?? {});
+        if (typeof opts !== "object" || opts === null)
+            throw new ValidationError("the third argument must be a model name or options");
         const body = { state, questions: validateQuestions(questions) };
-        if (model !== undefined)
-            body.model = model;
+        if (opts.model !== undefined)
+            body.model = opts.model;
+        if (opts.assets !== undefined)
+            body.assets = validateAssets(opts.assets);
+        if (opts.imageBudget !== undefined)
+            body.image_budget = validateImageBudget(opts.imageBudget);
         return parseResponse(await this.request("POST", "/v1/decide", body, key));
     }
     async models() {

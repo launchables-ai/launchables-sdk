@@ -21,6 +21,7 @@ from .errors import (
     error_for_status,
 )
 from .admin import Admin
+from .images import Image, validate_assets, validate_image_budget
 from .questions import validate_questions
 from .responses import DecisionResponse, KeyExpiry, KeyInfo, Model, parse_key_info, parse_response
 
@@ -103,14 +104,29 @@ class Launchables:
         state: Union[str, Mapping[str, Any]],
         questions: Mapping[str, Mapping[str, Any]],
         model: Optional[str] = None,
+        *,
+        assets: Optional[Mapping[str, Union[Image, Mapping[str, Any]]]] = None,
+        image_budget: Optional[int] = None,
     ) -> DecisionResponse:
-        """Ask one or more questions about ``state`` (a string or a JSON object)."""
+        """Ask one or more questions about ``state`` (a string or a JSON object).
+
+        ``assets`` maps a reference to an image (``Image.from_path``, ``Image.from_bytes``, or a dict already in the
+        ``{"type": "image", "format", "data_base64"}`` shape). Wherever the reference appears as text in the state (any
+        string value), a question's instructions or a criterion's description, the model sees the image there. Option
+        labels are not searched. Every asset must be referenced at least once.
+
+        ``image_budget`` (70, 140 or 280) is the most visual tokens one image may use; the server uses 280 when it is
+        not given. Lower is cheaper and faster but sees less detail."""
         key = self._resolve_key()
         if not isinstance(state, (str, Mapping)):
             raise ValidationError("state must be a string or a JSON object (dict)")
         body: Dict[str, Any] = {"state": state, "questions": validate_questions(questions)}
         if model is not None:
             body["model"] = model
+        if assets is not None:
+            body["assets"] = validate_assets(assets)
+        if image_budget is not None:
+            body["image_budget"] = validate_image_budget(image_budget)
         data = self._request("POST", "/v1/decide", body, key)
         return parse_response(data)
 
