@@ -435,8 +435,9 @@ class Batches:
         The first check is made at once. The wait after it is ``poll_interval`` seconds (default 5), 1.5 times longer
         after each check, up to ``max_interval`` (default 60); both must be at least 1 second. After ``timeout`` seconds
         (default 25 hours, past the 24-hour window) it raises ``BatchTimeoutError``; the deadline also shortens a status
-        request in flight. Setting ``stop`` (a ``threading.Event``) ends the wait at once with
-        ``BatchWaitCancelledError``; a status request in flight ends first, within the client's ``timeout``.
+        request in flight (each read of it, not the whole exchange). Setting ``stop`` (a ``threading.Event``) ends the wait
+        with ``BatchWaitCancelledError``: at once during a wait, including the client's own retry waits, and after the
+        current attempt (within the client's ``timeout``) when a status request is in flight.
         ``on_poll(batch)`` sees each status read.
 
         It keeps waiting through a brief outage (connection errors, 429 and 5xx other than "batch_unavailable"), and
@@ -461,14 +462,14 @@ class Batches:
         if stop is not None and stop.is_set():
             raise stopped()
         interval = min(first, most)
-        from .client import _DeadlinePassed  # the client imports this module
+        from .client import _Interrupted  # the client imports this module
 
         while True:
             batch: Optional[Batch] = None
             try:
-                status, raw = self._client._send("GET", path, key=key, deadline=deadline)
+                status, raw = self._client._send("GET", path, key=key, deadline=deadline, stop=stop)
                 batch = parse_batch(self._client._decode(raw, status))
-            except _DeadlinePassed:
+            except _Interrupted:
                 raise stopped() from None
             except LaunchablesError as e:
                 if (stop is not None and stop.is_set()) or time.monotonic() >= deadline:

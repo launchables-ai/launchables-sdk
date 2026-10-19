@@ -431,6 +431,18 @@ class WaitForTests(Base):
             self.client.batches.wait_for(ID, stop=stop)  # the first wait is 5 s
         self.assertLess(time.monotonic() - t0, 2)
 
+    def test_stop_also_ends_the_clients_own_retry_waits(self):
+        stop = threading.Event()
+        self.reply(429, {"error": "rate limit", "type": "rate_limited"}, {"Retry-After": "60"})
+        self.reply(200, status("done", counts(2, 0, 0)))
+        threading.Timer(0.05, stop.set).start()
+        t0 = time.monotonic()
+        with self.assertRaises(BatchWaitCancelledError) as cm:
+            self.client.batches.wait_for(ID, stop=stop)
+        self.assertIsNone(cm.exception.batch)
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(len(self.server.requests), 1)
+
     def test_a_stop_already_set_sends_nothing(self):
         stop = threading.Event()
         stop.set()

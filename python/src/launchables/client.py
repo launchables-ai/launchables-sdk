@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -53,8 +54,8 @@ def _days_until(date: str) -> Optional[int]:
 _sleep = time.sleep  # patched in tests
 
 
-class _DeadlinePassed(Exception):
-    """Internal: a request given a deadline ran out of time before it could finish."""
+class _Interrupted(Exception):
+    """Internal: a request given a deadline or a stop event ran out of time, or was stopped, before it could finish."""
 
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
@@ -237,15 +238,16 @@ class Launchables:
         base_url: Optional[str] = None, admin: bool = False, content_type: Optional[str] = None,
         accept: str = "application/json", headers: Optional[Mapping[str, str]] = None,
         once: Optional[Callable[[int, Optional[str]], bool]] = None, read: bool = True,
-        deadline: Optional[float] = None,
+        deadline: Optional[float] = None, stop: Optional[threading.Event] = None,
     ) -> Any:
         """Sends one request, retrying as allowed, and returns the first 2xx response.
 
         With ``read`` (the default) the body is read inside the retry loop and ``(status, bytes)`` is returned; without
         it the open response is returned unread, and the caller must close it. ``once`` marks a request that must never
         run twice: it is retried only on the (status, type) pairs it accepts, and never after a lost connection.
-        ``deadline`` (a ``time.monotonic()`` value) caps each attempt's timeout and the waits between attempts; past it,
-        ``_DeadlinePassed`` is raised."""
+        ``deadline`` (a ``time.monotonic()`` value) caps each attempt's socket timeout and the waits between attempts;
+        past it, ``_Interrupted`` is raised. A set ``stop`` event raises ``_Interrupted`` before an attempt or during a
+        wait between attempts (a request already in flight runs to its end)."""
         all_headers = {"User-Agent": USER_AGENT, "Accept": accept}
         if headers:
             all_headers.update(headers)
@@ -265,10 +267,12 @@ class Launchables:
         attempt = 0
         while True:
             timeout = self.timeout
+            if stop is not None and stop.is_set():
+                raise _Interrupted()
             if deadline is not None:
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    raise _DeadlinePassed()
+                    raise _Interrupted()
                 timeout = min(timeout, left)
             req = urllib.request.Request(url, data=payload, headers=all_headers, method=method)
             retry_after: Optional[float] = None
@@ -304,8 +308,12 @@ class Launchables:
                 raise err
             delay = min(retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt), MAX_RETRY_AFTER)
             if deadline is not None and time.monotonic() + delay >= deadline:
-                raise _DeadlinePassed()
-            _sleep(delay)
+                raise _Interrupted()
+            if stop is not None:
+                if stop.wait(delay):
+                    raise _Interrupted()
+            else:
+                _sleep(delay)
             attempt += 1
 
     @staticmethod
