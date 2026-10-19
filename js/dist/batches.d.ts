@@ -105,13 +105,13 @@ export interface CreateBatchOptions {
     webhookUrl?: string;
 }
 export interface WaitForOptions {
-    /** Milliseconds before the first check, and the first interval. Default 5000. */
+    /** The first wait between checks, in milliseconds (the first check is made at once). At least 1000; default 5000. */
     pollInterval?: number;
-    /** The longest interval between checks, in milliseconds. Each wait is 1.5 times the last, up to this. Default 60000. */
+    /** The longest wait between checks, in milliseconds. Each wait is 1.5 times the last, up to this. At least 1000; default 60000. */
     maxInterval?: number;
     /** Give up after this many milliseconds (throws `BatchTimeoutError`). Default 25 hours, past the 24-hour window. */
     timeout?: number;
-    /** Stop waiting early. The batch itself is not cancelled. */
+    /** Stop waiting early, including during a status request: `waitFor` rejects with the signal's reason. The batch itself is not cancelled. */
     signal?: AbortSignal;
     /** Called with each status read while waiting. */
     onPoll?: (batch: Batch) => void;
@@ -128,6 +128,7 @@ export interface BatchTransport {
         contentType?: string;
         headers?: Record<string, string>;
         create?: boolean;
+        signal?: AbortSignal;
     }): Promise<Record<string, unknown>>;
     lines(path: string): AsyncGenerator<string>;
     sleep(ms: number, signal?: AbortSignal): Promise<void>;

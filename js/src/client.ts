@@ -130,12 +130,8 @@ export class Launchables {
         const send: SendInit = { ...init };
         // a submission is retried only when the server refused it without storing it, so a retry never makes two batches
         if (init.create) send.once = (status, type) => (status === 429 && type === "rate_limited") || (status === 503 && type === "busy");
-        const { res, done } = await this.send(method, path, send, key, { baseURL: this.baseURL, admin: false });
-        try {
-          return decode(await res.text(), res.status);
-        } finally {
-          done();
-        }
+        const { res, text } = await this.send(method, path, { ...send, read: true }, key, { baseURL: this.baseURL, admin: false });
+        return decode(text, res.status);
       },
       lines: (path) => this.streamLines(path, this.requireKey()),
       sleep: (ms, signal) => abortable(this.sleep(ms), signal),
@@ -252,17 +248,15 @@ export class Launchables {
     }
     // a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never makes two keys
     if (target.admin && method === "POST") init.once = (status) => status === 429;
-    const { res, done } = await this.send(method, path, init, key, target);
-    try {
-      return decode(await res.text(), res.status);
-    } finally {
-      done();
-    }
+    const { res, text } = await this.send(method, path, { ...init, read: true }, key, target);
+    return decode(text, res.status);
   }
 
   /**
-   * Sends one request, retrying as the options allow, and returns the first 2xx response with its body unread. `done()`
-   * stops the timeout; until it is called, `timeout` covers the whole exchange.
+   * Sends one request, retrying as the options allow, and returns the first 2xx response. With `read`, the body is read
+   * inside the retry loop (a body that breaks off is a connection error, retried like one) and returned as `text`;
+   * without it the body is left unread for the caller, and `done()` stops the timeout, which until then covers the whole
+   * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason.
    */
   private async send(
     method: "GET" | "POST" | "DELETE",
@@ -270,7 +264,7 @@ export class Launchables {
     init: SendInit,
     key: string | undefined,
     target: Target,
-  ): Promise<{ res: Response; done: () => void; controller: AbortController }> {
+  ): Promise<{ res: Response; text: string; done: () => void; controller: AbortController }> {
     const headers: Record<string, string> = {
       Accept: init.accept ?? "application/json",
       "User-Agent": `launchables-js/${VERSION}`,
@@ -291,8 +285,14 @@ export class Launchables {
         () => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
         this.timeout,
       );
-      const done = () => clearTimeout(timer);
+      const onAbort = () => controller.abort(init.signal?.reason);
+      init.signal?.addEventListener("abort", onAbort, { once: true });
+      const done = () => {
+        clearTimeout(timer);
+        init.signal?.removeEventListener("abort", onAbort);
+      };
       try {
+        init.signal?.throwIfAborted();
         const res = await doFetch(target.baseURL + path, {
           method,
           headers,
@@ -300,7 +300,12 @@ export class Launchables {
           signal: controller.signal,
         });
         if (key && !target.admin) this.noteKeyHeaders(res.headers);
-        if (res.ok) return { res, done, controller };
+        if (res.ok) {
+          if (!init.read) return { res, text: "", done, controller };
+          const text = await res.text();
+          done();
+          return { res, text, done, controller };
+        }
         const text = await res.text();
         done();
         const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
@@ -309,6 +314,7 @@ export class Launchables {
         if (!retryable(res.status, err.type)) throw err;
       } catch (e) {
         done();
+        if (init.signal?.aborted) throw init.signal.reason;
         if (e instanceof LaunchablesError) {
           if (!(e.status !== undefined && retryable(e.status, e.type))) throw e;
           err = e;
@@ -320,7 +326,7 @@ export class Launchables {
         }
       }
       if (attempt >= this.maxRetries) throw err;
-      await this.sleep(Math.min(retryAfterMs ?? BACKOFF_BASE_MS * 2 ** attempt, MAX_RETRY_AFTER_MS));
+      await abortable(this.sleep(Math.min(retryAfterMs ?? BACKOFF_BASE_MS * 2 ** attempt, MAX_RETRY_AFTER_MS)), init.signal);
     }
   }
 
@@ -378,6 +384,10 @@ interface SendInit {
   contentType?: string;
   accept?: string;
   headers?: Record<string, string>;
+  /** Read the body inside the retry loop and return it as `text`. */
+  read?: boolean;
+  /** Ends the request, and any wait between attempts, with the signal's reason. */
+  signal?: AbortSignal;
   /** Set for a request that must not run twice: the only statuses (with the error type) it may be retried on. */
   once?: (status: number, type: string | null) => boolean;
 }

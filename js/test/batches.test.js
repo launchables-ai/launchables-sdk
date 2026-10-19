@@ -297,3 +297,33 @@ test("waitFor refuses intervals that are not numbers of milliseconds", async () 
   await assert.rejects(client.batches.waitFor(ID, { pollInterval: -1 }), RangeError);
   await assert.rejects(client.batches.waitFor(ID, { timeout: Number.NaN }), RangeError);
 });
+
+test("a sparse array is refused, hole by hole", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(client.batches.create(new Array(1)), (e) => e instanceof ValidationError && /line 1: must be an object/.test(e.message));
+  const holey = [line("a"), , line("c")]; // eslint-disable-line no-sparse-arrays
+  await assert.rejects(client.batches.create(holey), (e) => e instanceof ValidationError && /line 2: must be an object/.test(e.message));
+  assert.equal(calls.length, 0);
+});
+
+test("waitFor refuses waits under a second, so it can never poll in a tight loop", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(client.batches.waitFor(ID, { maxInterval: 0 }), RangeError);
+  await assert.rejects(client.batches.waitFor(ID, { pollInterval: 999 }), RangeError);
+  assert.equal(calls.length, 0);
+});
+
+test("waitFor's signal also ends a status request in flight, and never resolves after it", async () => {
+  const controller = new AbortController();
+  const reason = new Error("stopped");
+  let seenSignal;
+  const fetch = (url, init) => new Promise((resolve, reject) => {
+    seenSignal = init.signal;
+    init.signal.addEventListener("abort", () => reject(init.signal.reason));
+  });
+  const client = new Launchables({ apiKey: "launchables_test", baseURL: "https://example.test", fetch, sleep: async () => {} });
+  const waiting = client.batches.waitFor(ID, { signal: controller.signal });
+  setTimeout(() => controller.abort(reason), 5);
+  await assert.rejects(waiting, (e) => e === reason);
+  assert.equal(seenSignal.aborted, true);
+});

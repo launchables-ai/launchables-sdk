@@ -103,13 +103,13 @@ export interface CreateBatchOptions {
 }
 
 export interface WaitForOptions {
-  /** Milliseconds before the first check, and the first interval. Default 5000. */
+  /** The first wait between checks, in milliseconds (the first check is made at once). At least 1000; default 5000. */
   pollInterval?: number;
-  /** The longest interval between checks, in milliseconds. Each wait is 1.5 times the last, up to this. Default 60000. */
+  /** The longest wait between checks, in milliseconds. Each wait is 1.5 times the last, up to this. At least 1000; default 60000. */
   maxInterval?: number;
   /** Give up after this many milliseconds (throws `BatchTimeoutError`). Default 25 hours, past the 24-hour window. */
   timeout?: number;
-  /** Stop waiting early. The batch itself is not cancelled. */
+  /** Stop waiting early, including during a status request: `waitFor` rejects with the signal's reason. The batch itself is not cancelled. */
   signal?: AbortSignal;
   /** Called with each status read while waiting. */
   onPoll?: (batch: Batch) => void;
@@ -129,7 +129,7 @@ export interface BatchTransport {
   json(
     method: "GET" | "POST",
     path: string,
-    init?: { body?: string; contentType?: string; headers?: Record<string, string>; create?: boolean },
+    init?: { body?: string; contentType?: string; headers?: Record<string, string>; create?: boolean; signal?: AbortSignal },
   ): Promise<Record<string, unknown>>;
   lines(path: string): AsyncGenerator<string>;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
@@ -147,7 +147,8 @@ export function toJSONL(lines: readonly BatchLine[]): string {
   if (!Array.isArray(lines) || lines.length === 0) throw new ValidationError("a batch needs at least one line");
   const seen = new Set<string>();
   const out: string[] = [];
-  lines.forEach((line, i) => {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as BatchLine; // a hole in a sparse array is undefined, refused below
     let where = `line ${i + 1}`;
     if (typeof line !== "object" || line === null || Array.isArray(line)) throw new ValidationError(`${where}: must be an object`);
     const { custom_id, model, state, questions, assets, image_budget } = line;
@@ -178,7 +179,7 @@ export function toJSONL(lines: readonly BatchLine[]): string {
       throw e;
     }
     out.push(JSON.stringify(line));
-  });
+  }
   return out.join("\n") + "\n";
 }
 
@@ -283,20 +284,21 @@ export class Batches {
     const first = options.pollInterval ?? 5_000;
     const most = options.maxInterval ?? 60_000;
     const timeout = options.timeout ?? 25 * 3_600_000;
-    for (const [name, v] of [["pollInterval", first], ["maxInterval", most], ["timeout", timeout]] as const) {
-      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new RangeError(`${name} must be a number of milliseconds >= 0`);
+    for (const [name, v, least] of [["pollInterval", first, 1000], ["maxInterval", most, 1000], ["timeout", timeout, 0]] as const) {
+      if (typeof v !== "number" || !Number.isFinite(v) || v < least) throw new RangeError(`${name} must be a number of milliseconds >= ${least}`);
     }
     const started = Date.now();
     let interval = first;
     for (;;) {
       options.signal?.throwIfAborted();
-      const batch = (await this.t.json("GET", path)) as unknown as Batch;
+      const batch = (await this.t.json("GET", path, { signal: options.signal })) as unknown as Batch;
+      options.signal?.throwIfAborted();
       options.onPoll?.(batch);
       if (finished(batch)) return batch;
       const left = timeout - (Date.now() - started);
       if (left <= 0) throw new BatchTimeoutError(`batch ${id} is still ${batch.status} after ${timeout} ms`, batch);
       await this.t.sleep(Math.min(interval, left), options.signal);
-      interval = Math.min(Math.max(interval * 1.5, 1), most);
+      interval = Math.min(interval * 1.5, most);
     }
   }
 }

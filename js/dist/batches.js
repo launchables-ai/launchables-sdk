@@ -26,7 +26,8 @@ export function toJSONL(lines) {
         throw new ValidationError("a batch needs at least one line");
     const seen = new Set();
     const out = [];
-    lines.forEach((line, i) => {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]; // a hole in a sparse array is undefined, refused below
         let where = `line ${i + 1}`;
         if (typeof line !== "object" || line === null || Array.isArray(line))
             throw new ValidationError(`${where}: must be an object`);
@@ -62,7 +63,7 @@ export function toJSONL(lines) {
             throw e;
         }
         out.push(JSON.stringify(line));
-    });
+    }
     return out.join("\n") + "\n";
 }
 export function parseResult(data) {
@@ -166,15 +167,16 @@ export class Batches {
         const first = options.pollInterval ?? 5_000;
         const most = options.maxInterval ?? 60_000;
         const timeout = options.timeout ?? 25 * 3_600_000;
-        for (const [name, v] of [["pollInterval", first], ["maxInterval", most], ["timeout", timeout]]) {
-            if (typeof v !== "number" || !Number.isFinite(v) || v < 0)
-                throw new RangeError(`${name} must be a number of milliseconds >= 0`);
+        for (const [name, v, least] of [["pollInterval", first, 1000], ["maxInterval", most, 1000], ["timeout", timeout, 0]]) {
+            if (typeof v !== "number" || !Number.isFinite(v) || v < least)
+                throw new RangeError(`${name} must be a number of milliseconds >= ${least}`);
         }
         const started = Date.now();
         let interval = first;
         for (;;) {
             options.signal?.throwIfAborted();
-            const batch = (await this.t.json("GET", path));
+            const batch = (await this.t.json("GET", path, { signal: options.signal }));
+            options.signal?.throwIfAborted();
             options.onPoll?.(batch);
             if (finished(batch))
                 return batch;
@@ -182,7 +184,7 @@ export class Batches {
             if (left <= 0)
                 throw new BatchTimeoutError(`batch ${id} is still ${batch.status} after ${timeout} ms`, batch);
             await this.t.sleep(Math.min(interval, left), options.signal);
-            interval = Math.min(Math.max(interval * 1.5, 1), most);
+            interval = Math.min(interval * 1.5, most);
         }
     }
 }

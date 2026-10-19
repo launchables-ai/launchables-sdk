@@ -569,3 +569,22 @@ for (const [status, type] of [[400, "unsupported_image_format"], [400, "image_di
     assert.equal(calls.length, 1);
   });
 }
+
+test("a body that breaks off after the headers is a connection error, and is retried", async () => {
+  let n = 0;
+  const fetch = async () => {
+    n += 1;
+    if (n === 1) {
+      const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"model":')); c.error(new TypeError("terminated")); } });
+      return new Response(body, { status: 200 });
+    }
+    return new Response(JSON.stringify({ model: "m", answers: { q: { type: "noul", noul: 0.5 } } }), { status: 200 });
+  };
+  const client = new Launchables({ apiKey: "launchables_test", baseURL: "https://example.test", fetch, sleep: async () => {} });
+  const r = await client.decide("state", { q: noul("Is it?") });
+  assert.equal(r.model, "m");
+  assert.equal(n, 2);
+  const once = new Launchables({ apiKey: "launchables_test", baseURL: "https://example.test", maxRetries: 0, sleep: async () => {},
+    fetch: async () => new Response(new ReadableStream({ start(c) { c.error(new TypeError("terminated")); } }), { status: 200 }) });
+  await assert.rejects(once.decide("state", { q: noul("Is it?") }), APIConnectionError);
+});

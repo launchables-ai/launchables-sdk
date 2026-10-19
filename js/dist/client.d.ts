@@ -97,8 +97,10 @@ export declare class Launchables {
     }>;
     private request;
     /**
-     * Sends one request, retrying as the options allow, and returns the first 2xx response with its body unread. `done()`
-     * stops the timeout; until it is called, `timeout` covers the whole exchange.
+     * Sends one request, retrying as the options allow, and returns the first 2xx response. With `read`, the body is read
+     * inside the retry loop (a body that breaks off is a connection error, retried like one) and returned as `text`;
+     * without it the body is left unread for the caller, and `done()` stops the timeout, which until then covers the whole
+     * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason.
      */
     private send;
     /** The lines of a JSONL response, as they arrive. `timeout` covers the wait for the response and then each read. */
