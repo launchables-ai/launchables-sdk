@@ -2,6 +2,23 @@
 
 from ._version import __version__
 from .admin import AdminKeys
+from .batches import (
+    BATCH_FINISHED_STATUSES,
+    CUSTOM_ID_PATTERN,
+    AnsweredBatchResult,
+    Batch,
+    BatchCostEstimate,
+    BatchCounts,
+    Batches,
+    BatchLine,
+    BatchResult,
+    BatchTimeoutError,
+    BatchUsage,
+    BatchWaitCancelledError,
+    CreatedBatch,
+    FailedBatchResult,
+    to_jsonl,
+)
 from .client import DEFAULT_ADMIN_BASE_URL, DEFAULT_BASE_URL, KEY_EXPIRY_WARNING_DAYS, KeyExpiryWarning, Launchables
 from .errors import (
     APIConnectionError,
@@ -36,4 +53,7 @@ __all__ = [
     "LaunchablesError", "AuthenticationError", "OutOfCreditError", "PermissionDeniedError",
     "RateLimitError", "InvalidRequestError", "NotFoundError", "ConflictError",
     "ValidationError", "APIError", "APIConnectionError",
+    "Batches", "Batch", "BatchLine", "BatchCounts", "BatchCostEstimate", "BatchUsage", "CreatedBatch", "BatchResult",
+    "AnsweredBatchResult", "FailedBatchResult", "BatchTimeoutError", "BatchWaitCancelledError",
+    "BATCH_FINISHED_STATUSES", "CUSTOM_ID_PATTERN", "to_jsonl",
 ]

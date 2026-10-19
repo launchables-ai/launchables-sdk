@@ -89,7 +89,7 @@ export class Launchables {
     }
     /**
      * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
-     * `{ model, assets, imageBudget }`.
+     * `{ model, assets, imageBudget }`. Always name the model (see `DecideOptions.model`).
      */
     async decide(state, questions, modelOrOptions) {
         const key = this.requireKey();

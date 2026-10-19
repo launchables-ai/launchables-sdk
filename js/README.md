@@ -18,6 +18,7 @@ const client = new Launchables(); // reads LAUNCHABLES_API_TOKEN
 const resp = await client.decide(
   "Customer bought the item 12 days ago and has no receipt. Policy: refunds within 30 days with proof of purchase.",
   { refund: noul("Is a refund permitted under the policy?") },
+  "myles-g-12b",
 );
 
 const answer = resp.answers.refund;
@@ -26,7 +27,9 @@ console.log(answer.decide({ thresholdYes: 0.9, thresholdNo: 0.1 })); // "yes" | 
 console.log(resp.usage.input_tokens, resp.model);
 ```
 
-`decide(state, questions, model?)` (or `decide(state, questions, { model, assets, imageBudget })`, see [Images](#images)) returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
+`decide(state, questions, model)` (or `decide(state, questions, { model, assets, imageBudget })`, see [Images](#images)) returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
+
+Always name the model, a model id from `client.models()` (for example `"myles-g-12b"` or `"myles-g-31b"`), so every request says which model answers it. The API is moving to requiring it; until then a request without one is answered by the server's default model, which can change.
 
 ### Question types
 
@@ -37,7 +40,7 @@ const resp = await client.decide(state, {
   refund: noul("Is a refund permitted?", { true: "Policy clearly allows it", false: "Policy clearly forbids it" }),
   topic: choice("What is this about?", ["billing", "returns", "other"]),        // or { label: description }
   urgency: score("How urgent is it?", ["not urgent", "low", "medium", "high"]), // lowest level first, numbered from 0
-});
+}, "myles-g-12b");
 
 resp.answers.topic.choice;          // "returns"
 resp.answers.topic.probabilities;   // { billing: 0.06, returns: 0.89, ... }
@@ -69,6 +72,7 @@ const resp = await client.decide(
   { receipt: "receipt_photo", note: "Customer asks for a refund" },
   { total_matches: noul("Does the total printed on receipt_photo equal 23.40?") },
   {
+    model: "myles-g-12b",
     assets: { receipt_photo: await imageFromPath("receipt.jpg") }, // or imageFromBytes(uint8ArrayOrBuffer)
     imageBudget: 140, // optional: 70, 140 or 280 (the default)
   },
@@ -90,7 +94,7 @@ Images count as input tokens and are included in `usage.input_tokens`. At budget
 
 ## Batches
 
-The Batch API answers many decisions from one submission, within 24 hours, at half the live price per input token. Use it for work that does not need an answer straight away: back-catalogues, nightly reviews, re-scoring after a policy change.
+The Batch API answers many decisions from one submission, within 24 hours, at half the live price per input token. Use it for work that does not need an answer straight away: back-catalogues, nightly reviews, re-scoring after a policy change. Batch support is in version 0.5.0 and later.
 
 ```ts
 import { Launchables, noul, choice } from "launchables";
@@ -192,7 +196,7 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 import { OutOfCreditError, RateLimitError, InvalidRequestError, LaunchablesError } from "launchables";
 
 try {
-  await client.decide(state, questions);
+  await client.decide(state, questions, "myles-g-12b");
 } catch (e) {
   if (e instanceof OutOfCreditError) console.log(e.type === "budget_exceeded" ? "workspace budget reached" : "top up credit");
   else if (e instanceof RateLimitError) console.log("slow down", e.retryAfter);

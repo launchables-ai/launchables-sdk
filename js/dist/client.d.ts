@@ -8,7 +8,11 @@ export declare const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 /** Warn once when a key has this many days or fewer left. */
 export declare const KEY_EXPIRY_WARNING_DAYS = 14;
 export interface DecideOptions {
-    /** The model to ask. Defaults to the server's default. */
+    /**
+     * The model to ask, a model id from `models()` such as "myles-g-12b". Always send it, so every request names the model
+     * that answers it: the API is moving to requiring it, and until then a request without one is answered by the server's
+     * default model, which can change.
+     */
     model?: string;
     /**
      * Images, by reference: `{ receipt_photo: await imageFromPath("receipt.jpg") }`. Wherever the reference appears as text
@@ -72,7 +76,7 @@ export declare class Launchables {
     constructor(options?: LaunchablesOptions);
     /**
      * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
-     * `{ model, assets, imageBudget }`.
+     * `{ model, assets, imageBudget }`. Always name the model (see `DecideOptions.model`).
      */
     decide<Q extends Questions>(state: string | Record<string, unknown>, questions: Q, modelOrOptions?: string | DecideOptions): Promise<DecisionResponse<Q>>;
     /**

@@ -21,7 +21,11 @@ const MAX_RETRY_AFTER_MS = 60_000;
 export const KEY_EXPIRY_WARNING_DAYS = 14;
 
 export interface DecideOptions {
-  /** The model to ask. Defaults to the server's default. */
+  /**
+   * The model to ask, a model id from `models()` such as "myles-g-12b". Always send it, so every request names the model
+   * that answers it: the API is moving to requiring it, and until then a request without one is answered by the server's
+   * default model, which can change.
+   */
   model?: string;
   /**
    * Images, by reference: `{ receipt_photo: await imageFromPath("receipt.jpg") }`. Wherever the reference appears as text
@@ -145,7 +149,7 @@ export class Launchables {
 
   /**
    * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
-   * `{ model, assets, imageBudget }`.
+   * `{ model, assets, imageBudget }`. Always name the model (see `DecideOptions.model`).
    */
   async decide<Q extends Questions>(
     state: string | Record<string, unknown>,

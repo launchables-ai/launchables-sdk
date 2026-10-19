@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import os
 import socket
@@ -10,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 import warnings
-from typing import Any, Callable, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
 from ._version import __version__
 from .errors import (
@@ -21,6 +22,7 @@ from .errors import (
     error_for_status,
 )
 from .admin import Admin
+from .batches import BatchLine, Batches, CreatedBatch
 from .images import Image, validate_assets, validate_image_budget
 from .questions import validate_questions
 from .responses import DecisionResponse, KeyExpiry, KeyInfo, Model, parse_key_info, parse_response
@@ -49,6 +51,10 @@ def _days_until(date: str) -> Optional[int]:
     return (end - datetime.datetime.now(datetime.timezone.utc).date()).days
 
 _sleep = time.sleep  # patched in tests
+
+
+class _DeadlinePassed(Exception):
+    """Internal: a request given a deadline ran out of time before it could finish."""
 
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
@@ -96,6 +102,9 @@ class Launchables:
         self.admin_base_url = admin_base_url.rstrip("/")
         #: The key management API: ``admin.keys.list()``, ``create()``, ``roll()`` and ``revoke()``. Needs an admin key.
         self.admin = Admin(self)
+        #: The Batch API: ``batches.create()``, ``list()``, ``retrieve()``, ``results()``, ``stream_results()``,
+        #: ``cancel()`` and ``wait_for()``.
+        self.batches = Batches(self)
 
     # -- public API --------------------------------------------------------
 
@@ -109,6 +118,10 @@ class Launchables:
         image_budget: Optional[int] = None,
     ) -> DecisionResponse:
         """Ask one or more questions about ``state`` (a string or a JSON object).
+
+        Always pass ``model``, a model id from ``models()`` such as ``"myles-g-12b"``, so every request names the model
+        that answers it. The API is moving to requiring it; until then a request without one is answered by the server's
+        default model, which can change.
 
         ``assets`` maps a reference to an image (``Image.from_path``, ``Image.from_bytes``, or a dict already in the
         ``{"type": "image", "format", "data_base64"}`` shape). Wherever the reference appears as text in the state (any
@@ -129,6 +142,12 @@ class Launchables:
             body["image_budget"] = validate_image_budget(image_budget)
         data = self._request("POST", "/v1/decide", body, key)
         return parse_response(data)
+
+    def batch(self, lines: Sequence[BatchLine], webhook_url: Optional[str] = None) -> CreatedBatch:
+        """Submit a batch: many decisions answered within 24 hours at half the live price. The same as
+        ``batches.create()``. Each line is a ``decide`` body (a dict) with your ``custom_id`` and its ``model``; follow it
+        with ``batches.wait_for(id)`` and ``batches.results(id)``."""
+        return self.batches.create(lines, webhook_url=webhook_url)
 
     def models(self) -> List[Model]:
         # the key is optional here; when there is one, the response also tells the client when it expires
@@ -166,6 +185,10 @@ class Launchables:
             )
         return key
 
+    @staticmethod
+    def _pause(seconds: float) -> None:
+        _sleep(seconds)
+
     def _admin_request(self, method: str, path: str, body: Any = None) -> Dict[str, Any]:
         return self._request(method, path, body, self._resolve_admin_key(), base_url=self.admin_base_url, admin=True)
 
@@ -198,45 +221,91 @@ class Launchables:
         self, method: str, path: str, body: Any = None, key: Optional[str] = None,
         base_url: Optional[str] = None, admin: bool = False,
     ) -> Dict[str, Any]:
-        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         payload = None
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
+        content_type = None
         if body is not None:
             payload = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        base_url = self.base_url if base_url is None else base_url  # never the Decision API for an admin call
-        url = base_url + path
+            content_type = "application/json"
         # a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never
         # makes two keys
-        once = admin and method == "POST"
+        once = (lambda status, _type: status == 429) if admin and method == "POST" else None
+        status, raw = self._send(method, path, payload, key, base_url=base_url, admin=admin, content_type=content_type, once=once)
+        return self._decode(raw, status)
+
+    def _send(
+        self, method: str, path: str, payload: Optional[bytes] = None, key: Optional[str] = None, *,
+        base_url: Optional[str] = None, admin: bool = False, content_type: Optional[str] = None,
+        accept: str = "application/json", headers: Optional[Mapping[str, str]] = None,
+        once: Optional[Callable[[int, Optional[str]], bool]] = None, read: bool = True,
+        deadline: Optional[float] = None,
+    ) -> Any:
+        """Sends one request, retrying as allowed, and returns the first 2xx response.
+
+        With ``read`` (the default) the body is read inside the retry loop and ``(status, bytes)`` is returned; without
+        it the open response is returned unread, and the caller must close it. ``once`` marks a request that must never
+        run twice: it is retried only on the (status, type) pairs it accepts, and never after a lost connection.
+        ``deadline`` (a ``time.monotonic()`` value) caps each attempt's timeout and the waits between attempts; past it,
+        ``_DeadlinePassed`` is raised."""
+        all_headers = {"User-Agent": USER_AGENT, "Accept": accept}
+        if headers:
+            all_headers.update(headers)
+        if key:
+            all_headers["Authorization"] = f"Bearer {key}"
+        if payload is not None:
+            all_headers["Content-Type"] = content_type or "application/json"
+        base_url = self.base_url if base_url is None else base_url  # never the Decision API for an admin call
+        url = base_url + path
         note = key and not admin
+
+        def retryable(status: int, type_: Optional[str]) -> bool:
+            if type_ == "batch_unavailable":
+                return False  # the Batch API is switched off on this server; asking again will not change that
+            return once(status, type_) if once is not None else status in RETRY_STATUSES
 
         attempt = 0
         while True:
-            req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+            timeout = self.timeout
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise _DeadlinePassed()
+                timeout = min(timeout, left)
+            req = urllib.request.Request(url, data=payload, headers=all_headers, method=method)
             retry_after: Optional[float] = None
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+                try:
                     if note:
                         self._note_key_headers(resp.headers)
-                    return self._decode(resp.read(), resp.status)
+                    if not read:
+                        return resp
+                    return resp.status, resp.read()
+                finally:
+                    if read:
+                        resp.close()
             except urllib.error.HTTPError as e:
-                raw = e.read()
+                try:
+                    raw = e.read()
+                except (OSError, http.client.HTTPException):
+                    raw = b""
+                finally:
+                    e.close()
                 if note:
                     self._note_key_headers(e.headers)
                 retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
                 err: LaunchablesError = self._http_error(e.code, raw, retry_after)
-                retryable = e.code in RETRY_STATUSES and (not once or e.code == 429)
-            except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError) as e:
+                ok_to_retry = retryable(e.code, err.type)
+            except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError, http.client.HTTPException) as e:
                 reason = getattr(e, "reason", e)
                 err = APIConnectionError(f"Could not reach {base_url}: {reason}")
                 err.__cause__ = e
-                retryable = not once
-            if not retryable or attempt >= self.max_retries:
+                ok_to_retry = once is None
+            if not ok_to_retry or attempt >= self.max_retries:
                 raise err
-            delay = retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt)
-            _sleep(min(delay, MAX_RETRY_AFTER))
+            delay = min(retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt), MAX_RETRY_AFTER)
+            if deadline is not None and time.monotonic() + delay >= deadline:
+                raise _DeadlinePassed()
+            _sleep(delay)
             attempt += 1
 
     @staticmethod

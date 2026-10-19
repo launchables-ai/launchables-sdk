@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-- JavaScript: the Batch API. `client.batch(lines)` (or `client.batches.create`) submits many decisions as one JSONL file; `batches.list`, `retrieve`, `cancel`, `results`, `streamResults` (one result at a time, as it arrives) and `waitFor` (polls with growing waits, a timeout and an abort signal). Every line is checked before sending, names its own model and carries a `custom_id`; results are typed as `decide`'s answers. A submission is retried only after a refusal that stored nothing, so a retry never makes two batches. Python support follows before this is released (a release tag needs both packages at the same version).
-- `ConflictError` and `NotFoundError` also come from the Batch API (409 `batch_not_finished` or `batch_finished`, 404 `batch_not_found`). A 503 `batch_unavailable` is not retried.
+- The Batch API, in both clients. `client.batch(lines)` (or `client.batches.create`) submits many decisions as one JSONL file, answered within 24 hours at half the live price per input token; `batches.list`, `retrieve`, `cancel`, `results`, a streaming results reader (`streamResults` in JavaScript, `stream_results` in Python) and `waitFor` / `wait_for`, which polls with growing waits (5 s, 1.5 times longer each time, up to 60 s), gives up after 25 hours and can be stopped early (an `AbortSignal` in JavaScript, a `threading.Event` in Python). A webhook address is `webhookUrl` / `webhook_url`. Every line is checked before sending, names its own model and carries a `custom_id`; results are typed as `decide`'s answers. A submission is retried only after a refusal that stored nothing, so a retry never makes two batches.
+- `ConflictError` and `NotFoundError` also come from the Batch API (409 `batch_not_finished` or `batch_finished`, 404 `batch_not_found`). A 503 `batch_unavailable` is not retried. New errors: `BatchTimeoutError` (both) and `BatchWaitCancelledError` (Python; in JavaScript `waitFor` rejects with the signal's reason).
+- Always name the model on `decide` (and on every batch line). The API is moving to requiring it; until then a request without one is answered by the server's default model, which can change. The examples and docs now pass it everywhere.
+- Python: a response body that breaks off part-way is now a connection error, retried like one (as in JavaScript).
 
 ## 0.4.0
 
