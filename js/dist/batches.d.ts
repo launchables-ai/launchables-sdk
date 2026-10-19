@@ -116,10 +116,10 @@ export interface WaitForOptions {
     /** Called with each status read while waiting. */
     onPoll?: (batch: Batch) => void;
 }
-/** `waitFor` ran out of time. The batch keeps running; `batch` is its last status. */
+/** `waitFor` ran out of time. The batch keeps running; `batch` is its last status read (undefined if none was). */
 export declare class BatchTimeoutError extends LaunchablesError {
-    readonly batch: Batch;
-    constructor(message: string, batch: Batch);
+    readonly batch: Batch | undefined;
+    constructor(message: string, batch: Batch | undefined);
 }
 /** The transport the client gives this class: JSON requests, raw-body requests and a streamed response. */
 export interface BatchTransport {
@@ -173,6 +173,7 @@ export declare class Batches {
 }
 /**
  * Whether a batch's results can be collected: done or failed, or cancelled with every line accounted for (lines that were
- * in progress when it was cancelled still come back, and are billed, before its results are ready).
+ * in progress when it was cancelled still come back, and are billed, before its results are ready). A cancelled batch
+ * whose counts never add up (its lines could not be read back) is taken as finished 10 minutes after the cancel.
  */
-export declare function finished(batch: Batch): boolean;
+export declare function finished(batch: Batch, now?: number): boolean;

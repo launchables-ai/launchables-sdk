@@ -118,7 +118,7 @@ Each line is the body of one `decide` request with your own `custom_id` (1 to 64
 | `batch(lines, { webhookUrl? })` or `batches.create(...)` | Checks every line, sends them as one JSONL file and returns the queued batch with its cost estimate. |
 | `batches.list()` | The calling key's batches, oldest first. |
 | `batches.retrieve(id)` | Status (`queued`, `running`, `done`, `failed` or `cancelled`), counts and times. |
-| `batches.waitFor(id, options?)` | Polls until the results can be collected. The first check is at once; the wait after it, `pollInterval` (5000 ms), grows 1.5 times a check up to `maxInterval` (60000 ms), both at least 1000 ms; `timeout` (25 hours) throws `BatchTimeoutError`; `signal` stops waiting, even mid-request; `onPoll(batch)` sees each status. Giving up never cancels the batch. |
+| `batches.waitFor(id, options?)` | Polls until the results can be collected. The first check is at once; the wait after it, `pollInterval` (5000 ms), grows 1.5 times a check up to `maxInterval` (60000 ms), both at least 1000 ms; `timeout` (25 hours) throws `BatchTimeoutError`; `signal` stops waiting, even mid-request; `onPoll(batch)` sees each status. It keeps waiting through a brief outage (connection errors, 429 and 5xx other than `batch_unavailable`). Giving up never cancels the batch. |
 | `batches.streamResults(id)` | Each result line as it arrives, in input order, so a large file is never held in memory. |
 | `batches.results(id)` | Every result line in one array. |
 | `batches.cancel(id)` | Stops the batch. Lines already answered stay in the results and are billed; the rest read as cancelled and are not. |

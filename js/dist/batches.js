@@ -1,4 +1,4 @@
-import { LaunchablesError, ValidationError } from "./errors.js";
+import { APIConnectionError, APIError, LaunchablesError, RateLimitError, ValidationError } from "./errors.js";
 import { validateQuestions } from "./questions.js";
 import { validateAssets, validateImageBudget } from "./images.js";
 import { parseResponse } from "./types.js";
@@ -6,7 +6,7 @@ import { parseResponse } from "./types.js";
 export const CUSTOM_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/;
 /** The statuses after which a batch never changes again. */
 export const BATCH_FINISHED_STATUSES = ["done", "failed", "cancelled"];
-/** `waitFor` ran out of time. The batch keeps running; `batch` is its last status. */
+/** `waitFor` ran out of time. The batch keeps running; `batch` is its last status read (undefined if none was). */
 export class BatchTimeoutError extends LaunchablesError {
     batch;
     constructor(message, batch) {
@@ -14,6 +14,15 @@ export class BatchTimeoutError extends LaunchablesError {
         this.batch = batch;
     }
 }
+const TIMED_OUT = new Error("waitFor timed out");
+/** An error that says nothing about the batch: the endpoint was briefly unreachable, busy or rate-limited. */
+function passing(e) {
+    if (e instanceof APIConnectionError || e instanceof RateLimitError)
+        return true;
+    return e instanceof APIError && e.type !== "batch_unavailable";
+}
+/** How long after a cancel `waitFor` waits for the lines in progress before taking the batch as finished anyway. */
+const CANCEL_SETTLE_MS = 10 * 60_000;
 const batchPath = (id) => {
     if (typeof id !== "string" || !/^batch_[0-9a-f]{24}$/.test(id)) {
         throw new ValidationError(`not a batch id: ${JSON.stringify(id)} (ids look like "batch_" and 24 hex digits)`);
@@ -171,32 +180,71 @@ export class Batches {
             if (typeof v !== "number" || !Number.isFinite(v) || v < least)
                 throw new RangeError(`${name} must be a number of milliseconds >= ${least}`);
         }
+        options.signal?.throwIfAborted();
         const started = Date.now();
-        let interval = first;
-        for (;;) {
-            options.signal?.throwIfAborted();
-            const batch = (await this.t.json("GET", path, { signal: options.signal }));
-            options.signal?.throwIfAborted();
-            options.onPoll?.(batch);
-            if (finished(batch))
-                return batch;
-            const left = timeout - (Date.now() - started);
-            if (left <= 0)
-                throw new BatchTimeoutError(`batch ${id} is still ${batch.status} after ${timeout} ms`, batch);
-            await this.t.sleep(Math.min(interval, left), options.signal);
-            interval = Math.min(interval * 1.5, most);
+        // one signal for the caller's abort and the deadline, so both reach a status request in flight and the waits
+        const stop = new AbortController();
+        const onAbort = () => stop.abort(options.signal?.reason);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        const timer = setTimeout(() => stop.abort(TIMED_OUT), Math.min(timeout, 2 ** 31 - 1)); // longer: the check below
+        let last;
+        const stopped = () => options.signal?.aborted
+            ? options.signal.reason
+            : new BatchTimeoutError(`batch ${id} is still ${last?.status ?? "unknown"} after ${timeout} ms`, last);
+        let interval = Math.min(first, most);
+        try {
+            for (;;) {
+                let batch;
+                try {
+                    batch = (await this.t.json("GET", path, { signal: stop.signal }));
+                }
+                catch (e) {
+                    if (stop.signal.aborted)
+                        throw stopped();
+                    if (!passing(e))
+                        throw e; // an outage longer than the client's own retries: keep waiting, the batch is unaffected
+                }
+                if (stop.signal.aborted)
+                    throw stopped();
+                if (batch) {
+                    last = batch;
+                    options.onPoll?.(batch);
+                    if (finished(batch))
+                        return batch;
+                }
+                const left = timeout - (Date.now() - started);
+                if (left <= 0)
+                    throw stopped();
+                try {
+                    await this.t.sleep(Math.min(interval, left), stop.signal);
+                }
+                catch (e) {
+                    if (stop.signal.aborted)
+                        throw stopped();
+                    throw e;
+                }
+                interval = Math.min(interval * 1.5, most);
+            }
+        }
+        finally {
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
         }
     }
 }
 /**
  * Whether a batch's results can be collected: done or failed, or cancelled with every line accounted for (lines that were
- * in progress when it was cancelled still come back, and are billed, before its results are ready).
+ * in progress when it was cancelled still come back, and are billed, before its results are ready). A cancelled batch
+ * whose counts never add up (its lines could not be read back) is taken as finished 10 minutes after the cancel.
  */
-export function finished(batch) {
+export function finished(batch, now = Date.now()) {
     if (batch.status === "done" || batch.status === "failed")
         return true;
     if (batch.status !== "cancelled")
         return false;
     const c = batch.counts ?? { done: 0, failed: 0, pending: 0 };
-    return c.done + c.failed >= batch.lines;
+    if (c.done + c.failed >= batch.lines)
+        return true;
+    const at = batch.finished_at ? Date.parse(batch.finished_at) : Number.NaN;
+    return !Number.isFinite(at) || now - at >= CANCEL_SETTLE_MS;
 }

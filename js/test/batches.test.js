@@ -262,10 +262,12 @@ test("waitFor stops growing the wait at maxInterval", async () => {
   assert.deepEqual(sleeps, [1000, 1500, 2000, 2000, 2000]);
 });
 
+const cancelledAt = (counts, lines, at) => ({ ...status("cancelled", counts, lines), finished_at: new Date(at).toISOString() });
+
 test("waitFor on a cancelled batch waits for the lines still in progress", async () => {
   const { client, calls } = setup([
-    [200, status("cancelled", { done: 1, failed: 0, pending: 0 }, 3)],
-    [200, status("cancelled", { done: 2, failed: 1, pending: 0 }, 3)],
+    [200, cancelledAt({ done: 1, failed: 0, pending: 0 }, 3, Date.now())],
+    [200, cancelledAt({ done: 2, failed: 1, pending: 0 }, 3, Date.now())],
   ]);
   assert.equal((await client.batches.waitFor(ID)).counts.done, 2);
   assert.equal(calls.length, 2);
@@ -326,4 +328,39 @@ test("waitFor's signal also ends a status request in flight, and never resolves 
   setTimeout(() => controller.abort(reason), 5);
   await assert.rejects(waiting, (e) => e === reason);
   assert.equal(seenSignal.aborted, true);
+});
+
+test("waitFor takes a cancelled batch whose counts never add up as finished 10 minutes after the cancel", async () => {
+  const { client, calls } = setup([[200, cancelledAt({ done: 1, failed: 0, pending: 0 }, 3, Date.now() - 11 * 60_000)]]);
+  assert.equal((await client.batches.waitFor(ID)).status, "cancelled");
+  assert.equal(calls.length, 1);
+});
+
+test("waitFor keeps waiting through an outage longer than the client's own retries", async () => {
+  const down = Array.from({ length: 4 }, () => [502, { error: "bad gateway" }]); // 1 try + 3 retries: one failed poll
+  const { client, calls } = setup([...down, new TypeError("fetch failed"), new TypeError("fetch failed"), new TypeError("fetch failed"),
+    new TypeError("fetch failed"), [200, status("done", { done: 2, failed: 0, pending: 0 })]]);
+  assert.equal((await client.batches.waitFor(ID)).status, "done");
+  assert.equal(calls.length, 9);
+});
+
+test("waitFor does not wait through errors that will not pass", async () => {
+  const a = setup([[503, { error: "the batch API is not available on this server", type: "batch_unavailable" }]]);
+  await assert.rejects(a.client.batches.waitFor(ID), (e) => e instanceof APIError && e.type === "batch_unavailable");
+  const b = setup([[404, { error: "batch not found", type: "batch_not_found" }]]);
+  await assert.rejects(b.client.batches.waitFor(ID), NotFoundError);
+});
+
+test("waitFor's timeout also ends a status request in flight", async () => {
+  const fetch = (url, init) => new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  const client = new Launchables({ apiKey: "launchables_test", baseURL: "https://example.test", fetch, sleep: async () => {} });
+  const t0 = Date.now();
+  await assert.rejects(client.batches.waitFor(ID, { timeout: 30 }), (e) => e instanceof BatchTimeoutError && e.batch === undefined);
+  assert.ok(Date.now() - t0 < 5_000);
+});
+
+test("the first wait is capped by maxInterval", async () => {
+  const { client, sleeps } = setup([[200, status("running", { done: 0, failed: 0, pending: 2 })], [200, status("done", { done: 2, failed: 0, pending: 0 })]]);
+  await client.batches.waitFor(ID, { pollInterval: 60_000, maxInterval: 2_000 });
+  assert.deepEqual(sleeps, [2000]);
 });
