@@ -75,24 +75,34 @@ export interface Batch {
   delete_after: string | null;
 }
 
-/** One line of a batch's results, in input order. */
-export interface BatchResult<Q extends Questions = Questions> {
+interface BatchResultBase {
   custom_id: string | null;
   /** The model build that answered (or the model the line named, if it was not answered). */
   model: string | null;
   /** The HTTP status the line got (200 when answered), or null for a line that was never run. */
   status: number | null;
-  /** True when the line was answered: `response` is set and `error` is not. */
-  ok: boolean;
-  /** The decision, exactly as `decide` would return it. */
-  response?: DecisionResponse<Q>;
-  /** Why the line was not answered: `{ error, type }`, e.g. type "expired", "cancelled" or a refusal such as "invalid_question". */
-  error?: { error?: string; type?: string; [key: string]: unknown };
   /** Tokens for this line. Batch lines are billed on `input_tokens` at the batch rate; unanswered lines are not billed. */
   usage: { input_tokens: number; output_tokens: number; batch: true };
   /** The line as the server sent it. */
   raw: Record<string, unknown>;
 }
+
+/** An answered line: `response` is the decision, exactly as `decide` would return it. */
+export interface AnsweredBatchResult<Q extends Questions = Questions> extends BatchResultBase {
+  ok: true;
+  response: DecisionResponse<Q>;
+  error?: undefined;
+}
+
+/** A line that was not answered: `error` says why, e.g. type "expired", "cancelled" or a refusal such as "invalid_question". */
+export interface FailedBatchResult extends BatchResultBase {
+  ok: false;
+  response?: undefined;
+  error: { error?: string; type?: string; [key: string]: unknown };
+}
+
+/** One line of a batch's results, in input order. Check `ok` to tell which kind it is. */
+export type BatchResult<Q extends Questions = Questions> = AnsweredBatchResult<Q> | FailedBatchResult;
 
 export interface CreateBatchOptions {
   /**
@@ -136,6 +146,7 @@ export interface BatchTransport {
 }
 
 const TIMED_OUT = new Error("waitFor timed out");
+const MAX_TIMER_MS = 2 ** 31 - 1; // the longest a timer can wait
 
 /** An error that says nothing about the batch: the endpoint was briefly unreachable, busy or rate-limited. */
 function passing(e: unknown): boolean {
@@ -196,28 +207,25 @@ export function toJSONL(lines: readonly BatchLine[]): string {
 
 export function parseResult<Q extends Questions = Questions>(data: Record<string, unknown>): BatchResult<Q> {
   const usage = (data.usage ?? {}) as Record<string, unknown>;
-  const result: BatchResult<Q> = {
+  const base: BatchResultBase = {
     custom_id: typeof data.custom_id === "string" ? data.custom_id : null,
     model: typeof data.model === "string" ? data.model : null,
     status: typeof data.status === "number" ? data.status : null,
-    ok: false,
     usage: { input_tokens: Number(usage.input_tokens ?? 0), output_tokens: Number(usage.output_tokens ?? 0), batch: true },
     raw: data,
   };
   const response = data.response;
   if (typeof response === "object" && response !== null && !Array.isArray(response)) {
     try {
-      result.response = parseResponse<Q>(response as Record<string, unknown>);
-      result.ok = true;
+      return { ...base, ok: true, response: parseResponse<Q>(response as Record<string, unknown>) };
     } catch {
-      result.error = { error: "the answer could not be read by this version of the client", type: "unreadable_answer" };
+      return { ...base, ok: false, error: { error: "the answer could not be read by this version of the client", type: "unreadable_answer" } };
     }
-  } else if (typeof data.error === "object" && data.error !== null) {
-    result.error = data.error as BatchResult["error"];
-  } else {
-    result.error = { error: typeof data.error === "string" ? data.error : "this line was not answered" };
   }
-  return result;
+  if (typeof data.error === "object" && data.error !== null) {
+    return { ...base, ok: false, error: data.error as FailedBatchResult["error"] };
+  }
+  return { ...base, ok: false, error: { error: typeof data.error === "string" ? data.error : "this line was not answered" } };
 }
 
 /** The Batch API: many decisions in one file, answered within 24 hours at half the live price. */
@@ -298,13 +306,14 @@ export class Batches {
     for (const [name, v, least] of [["pollInterval", first, 1000], ["maxInterval", most, 1000], ["timeout", timeout, 0]] as const) {
       if (typeof v !== "number" || !Number.isFinite(v) || v < least) throw new RangeError(`${name} must be a number of milliseconds >= ${least}`);
     }
+    if (timeout > MAX_TIMER_MS) throw new RangeError(`timeout must be at most ${MAX_TIMER_MS} ms (about 24.8 days)`);
     options.signal?.throwIfAborted();
     const started = Date.now();
     // one signal for the caller's abort and the deadline, so both reach a status request in flight and the waits
     const stop = new AbortController();
     const onAbort = () => stop.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => stop.abort(TIMED_OUT), Math.min(timeout, 2 ** 31 - 1)); // longer: the check below
+    const timer = setTimeout(() => stop.abort(TIMED_OUT), timeout);
     let last: Batch | undefined;
     const stopped = () =>
       options.signal?.aborted

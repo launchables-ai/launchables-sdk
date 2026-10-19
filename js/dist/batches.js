@@ -15,6 +15,7 @@ export class BatchTimeoutError extends LaunchablesError {
     }
 }
 const TIMED_OUT = new Error("waitFor timed out");
+const MAX_TIMER_MS = 2 ** 31 - 1; // the longest a timer can wait
 /** An error that says nothing about the batch: the endpoint was briefly unreachable, busy or rate-limited. */
 function passing(e) {
     if (e instanceof APIConnectionError || e instanceof RateLimitError)
@@ -77,31 +78,26 @@ export function toJSONL(lines) {
 }
 export function parseResult(data) {
     const usage = (data.usage ?? {});
-    const result = {
+    const base = {
         custom_id: typeof data.custom_id === "string" ? data.custom_id : null,
         model: typeof data.model === "string" ? data.model : null,
         status: typeof data.status === "number" ? data.status : null,
-        ok: false,
         usage: { input_tokens: Number(usage.input_tokens ?? 0), output_tokens: Number(usage.output_tokens ?? 0), batch: true },
         raw: data,
     };
     const response = data.response;
     if (typeof response === "object" && response !== null && !Array.isArray(response)) {
         try {
-            result.response = parseResponse(response);
-            result.ok = true;
+            return { ...base, ok: true, response: parseResponse(response) };
         }
         catch {
-            result.error = { error: "the answer could not be read by this version of the client", type: "unreadable_answer" };
+            return { ...base, ok: false, error: { error: "the answer could not be read by this version of the client", type: "unreadable_answer" } };
         }
     }
-    else if (typeof data.error === "object" && data.error !== null) {
-        result.error = data.error;
+    if (typeof data.error === "object" && data.error !== null) {
+        return { ...base, ok: false, error: data.error };
     }
-    else {
-        result.error = { error: typeof data.error === "string" ? data.error : "this line was not answered" };
-    }
-    return result;
+    return { ...base, ok: false, error: { error: typeof data.error === "string" ? data.error : "this line was not answered" } };
 }
 /** The Batch API: many decisions in one file, answered within 24 hours at half the live price. */
 export class Batches {
@@ -180,13 +176,15 @@ export class Batches {
             if (typeof v !== "number" || !Number.isFinite(v) || v < least)
                 throw new RangeError(`${name} must be a number of milliseconds >= ${least}`);
         }
+        if (timeout > MAX_TIMER_MS)
+            throw new RangeError(`timeout must be at most ${MAX_TIMER_MS} ms (about 24.8 days)`);
         options.signal?.throwIfAborted();
         const started = Date.now();
         // one signal for the caller's abort and the deadline, so both reach a status request in flight and the waits
         const stop = new AbortController();
         const onAbort = () => stop.abort(options.signal?.reason);
         options.signal?.addEventListener("abort", onAbort, { once: true });
-        const timer = setTimeout(() => stop.abort(TIMED_OUT), Math.min(timeout, 2 ** 31 - 1)); // longer: the check below
+        const timer = setTimeout(() => stop.abort(TIMED_OUT), timeout);
         let last;
         const stopped = () => options.signal?.aborted
             ? options.signal.reason

@@ -37,6 +37,8 @@ export type {
   BatchCostEstimate,
   BatchLine,
   BatchResult,
+  AnsweredBatchResult,
+  FailedBatchResult,
   BatchStatus,
   CreateBatchOptions,
   CreatedBatch,

@@ -364,3 +364,9 @@ test("the first wait is capped by maxInterval", async () => {
   await client.batches.waitFor(ID, { pollInterval: 60_000, maxInterval: 2_000 });
   assert.deepEqual(sleeps, [2000]);
 });
+
+test("waitFor refuses a timeout longer than a timer can wait", async () => {
+  const { client, calls } = setup([]);
+  await assert.rejects(client.batches.waitFor(ID, { timeout: 2 ** 31 }), RangeError);
+  assert.equal(calls.length, 0);
+});

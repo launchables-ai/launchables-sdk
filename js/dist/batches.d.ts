@@ -71,23 +71,12 @@ export interface Batch {
     /** When the batch and its results are deleted; null while it runs. */
     delete_after: string | null;
 }
-/** One line of a batch's results, in input order. */
-export interface BatchResult<Q extends Questions = Questions> {
+interface BatchResultBase {
     custom_id: string | null;
     /** The model build that answered (or the model the line named, if it was not answered). */
     model: string | null;
     /** The HTTP status the line got (200 when answered), or null for a line that was never run. */
     status: number | null;
-    /** True when the line was answered: `response` is set and `error` is not. */
-    ok: boolean;
-    /** The decision, exactly as `decide` would return it. */
-    response?: DecisionResponse<Q>;
-    /** Why the line was not answered: `{ error, type }`, e.g. type "expired", "cancelled" or a refusal such as "invalid_question". */
-    error?: {
-        error?: string;
-        type?: string;
-        [key: string]: unknown;
-    };
     /** Tokens for this line. Batch lines are billed on `input_tokens` at the batch rate; unanswered lines are not billed. */
     usage: {
         input_tokens: number;
@@ -97,6 +86,24 @@ export interface BatchResult<Q extends Questions = Questions> {
     /** The line as the server sent it. */
     raw: Record<string, unknown>;
 }
+/** An answered line: `response` is the decision, exactly as `decide` would return it. */
+export interface AnsweredBatchResult<Q extends Questions = Questions> extends BatchResultBase {
+    ok: true;
+    response: DecisionResponse<Q>;
+    error?: undefined;
+}
+/** A line that was not answered: `error` says why, e.g. type "expired", "cancelled" or a refusal such as "invalid_question". */
+export interface FailedBatchResult extends BatchResultBase {
+    ok: false;
+    response?: undefined;
+    error: {
+        error?: string;
+        type?: string;
+        [key: string]: unknown;
+    };
+}
+/** One line of a batch's results, in input order. Check `ok` to tell which kind it is. */
+export type BatchResult<Q extends Questions = Questions> = AnsweredBatchResult<Q> | FailedBatchResult;
 export interface CreateBatchOptions {
     /**
      * An https address to tell when the batch ends. It receives one POST of `{ id, status }`, never results. It must resolve
@@ -177,3 +184,4 @@ export declare class Batches {
  * whose counts never add up (its lines could not be read back) is taken as finished 10 minutes after the cancel.
  */
 export declare function finished(batch: Batch, now?: number): boolean;
+export {};
