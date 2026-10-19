@@ -2,6 +2,7 @@ import { type Questions } from "./questions.js";
 import { type Assets, type ImageBudget } from "./images.js";
 import { type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { AdminKeys } from "./admin.js";
+import { Batches, type BatchLine, type CreateBatchOptions, type CreatedBatch } from "./batches.js";
 export declare const DEFAULT_BASE_URL = "https://api.launchables.ai";
 export declare const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 /** Warn once when a key has this many days or fewer left. */
@@ -56,6 +57,8 @@ export declare class Launchables {
     readonly admin: {
         keys: AdminKeys;
     };
+    /** The Batch API: `batches.create()`, `list()`, `retrieve()`, `results()`, `streamResults()`, `cancel()` and `waitFor()`. */
+    readonly batches: Batches;
     readonly timeout: number;
     readonly maxRetries: number;
     private readonly apiKey;
@@ -72,6 +75,12 @@ export declare class Launchables {
      * `{ model, assets, imageBudget }`.
      */
     decide<Q extends Questions>(state: string | Record<string, unknown>, questions: Q, modelOrOptions?: string | DecideOptions): Promise<DecisionResponse<Q>>;
+    /**
+     * Submit a batch: many decisions answered within 24 hours at half the live price. The same as `batches.create()`. Each
+     * line is a `decide` body with your `custom_id` and its `model`; follow it with `batches.waitFor(id)` and
+     * `batches.results(id)`.
+     */
+    batch(lines: readonly BatchLine[], options?: CreateBatchOptions): Promise<CreatedBatch>;
     models(): Promise<Model[]>;
     /**
      * Details of the key this client uses: id, name, when it expires and how many days are left, its limits, and whether
@@ -87,4 +96,11 @@ export declare class Launchables {
         status: string;
     }>;
     private request;
+    /**
+     * Sends one request, retrying as the options allow, and returns the first 2xx response with its body unread. `done()`
+     * stops the timeout; until it is called, `timeout` covers the whole exchange.
+     */
+    private send;
+    /** The lines of a JSONL response, as they arrive. `timeout` covers the wait for the response and then each read. */
+    private streamLines;
 }

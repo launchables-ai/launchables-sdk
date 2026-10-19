@@ -31,4 +31,15 @@ export type {
 } from "./types.js";
 export { AdminKeys } from "./admin.js";
 export type { ManagedKey, KeyPage, CreatedKey, RolledKey, RevokedKey, CreateKeyParams, ListKeysParams } from "./admin.js";
+export { Batches, BatchTimeoutError, CUSTOM_ID_PATTERN, BATCH_FINISHED_STATUSES, toJSONL } from "./batches.js";
+export type {
+  Batch,
+  BatchCostEstimate,
+  BatchLine,
+  BatchResult,
+  BatchStatus,
+  CreateBatchOptions,
+  CreatedBatch,
+  WaitForOptions,
+} from "./batches.js";
 export { VERSION } from "./version.js";

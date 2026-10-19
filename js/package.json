@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/client.test.js",
+    "test": "npm run build && node --test test/client.test.js test/batches.test.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -13,6 +13,8 @@ Every key expires. Each response carries the key's expiry in the `Launchables-Ke
 
 Questions can look at images: pass PNG or JPEG files in `assets` and name them in the state or the instructions (see the Images section of each client's README).
 
+Large workloads can go through the Batch API: many decisions in one submission, answered within 24 hours at half the live price per input token (`client.batch(lines)` in JavaScript; see the Batches section of its README). Python support follows.
+
 To rotate keys automatically, `client.admin.keys` lists, creates, rolls and revokes your organisation's keys with an admin key (`LAUNCHABLES_ADMIN_KEY`), which an owner makes in the console. See the Managing keys section of each client's README.
 
 Equivalent raw request:
