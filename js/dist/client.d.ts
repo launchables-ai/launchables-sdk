@@ -2,12 +2,17 @@ import { type Questions } from "./questions.js";
 import { type Assets, type ImageBudget } from "./images.js";
 import { type DecisionResponse, type KeyExpiry, type KeyInfo, type Model } from "./types.js";
 import { AdminKeys } from "./admin.js";
+import { Batches, type BatchLine, type CreateBatchOptions, type CreatedBatch } from "./batches.js";
 export declare const DEFAULT_BASE_URL = "https://api.launchables.ai";
 export declare const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 /** Warn once when a key has this many days or fewer left. */
 export declare const KEY_EXPIRY_WARNING_DAYS = 14;
 export interface DecideOptions {
-    /** The model to ask. Defaults to the server's default. */
+    /**
+     * The model to ask, a model id from `models()` such as "myles-g-12b". Always send it, so every request names the model
+     * that answers it: the API is moving to requiring it, and until then a request without one is answered by the server's
+     * default model, which can change.
+     */
     model?: string;
     /**
      * Images, by reference: `{ receipt_photo: await imageFromPath("receipt.jpg") }`. Wherever the reference appears as text
@@ -56,6 +61,8 @@ export declare class Launchables {
     readonly admin: {
         keys: AdminKeys;
     };
+    /** The Batch API: `batches.create()`, `list()`, `retrieve()`, `results()`, `streamResults()`, `cancel()` and `waitFor()`. */
+    readonly batches: Batches;
     readonly timeout: number;
     readonly maxRetries: number;
     private readonly apiKey;
@@ -69,9 +76,15 @@ export declare class Launchables {
     constructor(options?: LaunchablesOptions);
     /**
      * Ask one or more questions about `state` (a string or a JSON object). The third argument is a model name, or options
-     * `{ model, assets, imageBudget }`.
+     * `{ model, assets, imageBudget }`. Always name the model (see `DecideOptions.model`).
      */
     decide<Q extends Questions>(state: string | Record<string, unknown>, questions: Q, modelOrOptions?: string | DecideOptions): Promise<DecisionResponse<Q>>;
+    /**
+     * Submit a batch: many decisions answered within 24 hours at half the live price. The same as `batches.create()`. Each
+     * line is a `decide` body with your `custom_id` and its `model`; follow it with `batches.waitFor(id)` and
+     * `batches.results(id)`.
+     */
+    batch(lines: readonly BatchLine[], options?: CreateBatchOptions): Promise<CreatedBatch>;
     models(): Promise<Model[]>;
     /**
      * Details of the key this client uses: id, name, when it expires and how many days are left, its limits, and whether
@@ -87,4 +100,13 @@ export declare class Launchables {
         status: string;
     }>;
     private request;
+    /**
+     * Sends one request, retrying as the options allow, and returns the first 2xx response. With `read`, the body is read
+     * inside the retry loop (a body that breaks off is a connection error, retried like one) and returned as `text`;
+     * without it the body is left unread for the caller, and `done()` stops the timeout, which until then covers the whole
+     * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason.
+     */
+    private send;
+    /** The lines of a JSONL response, as they arrive. `timeout` covers the wait for the response and then each read. */
+    private streamLines;
 }

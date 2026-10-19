@@ -18,6 +18,7 @@ const client = new Launchables(); // reads LAUNCHABLES_API_TOKEN
 const resp = await client.decide(
   "Customer bought the item 12 days ago and has no receipt. Policy: refunds within 30 days with proof of purchase.",
   { refund: noul("Is a refund permitted under the policy?") },
+  "myles-g-12b",
 );
 
 const answer = resp.answers.refund;
@@ -26,7 +27,9 @@ console.log(answer.decide({ thresholdYes: 0.9, thresholdNo: 0.1 })); // "yes" | 
 console.log(resp.usage.input_tokens, resp.model);
 ```
 
-`decide(state, questions, model?)` (or `decide(state, questions, { model, assets, imageBudget })`, see [Images](#images)) returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
+`decide(state, questions, model)` (or `decide(state, questions, { model, assets, imageBudget })`, see [Images](#images)) returns `{ model, answers, usage, raw }`. `state` may be a string or an object. Answers are typed from the question you asked, so `resp.answers.refund` is a `NoulAnswer`.
+
+Always name the model, a model id from `client.models()` (for example `"myles-g-12b"` or `"myles-g-31b"`), so every request says which model answers it. The API is moving to requiring it; until then a request without one is answered by the server's default model, which can change.
 
 ### Question types
 
@@ -37,7 +40,7 @@ const resp = await client.decide(state, {
   refund: noul("Is a refund permitted?", { true: "Policy clearly allows it", false: "Policy clearly forbids it" }),
   topic: choice("What is this about?", ["billing", "returns", "other"]),        // or { label: description }
   urgency: score("How urgent is it?", ["not urgent", "low", "medium", "high"]), // lowest level first, numbered from 0
-});
+}, "myles-g-12b");
 
 resp.answers.topic.choice;          // "returns"
 resp.answers.topic.probabilities;   // { billing: 0.06, returns: 0.89, ... }
@@ -69,6 +72,7 @@ const resp = await client.decide(
   { receipt: "receipt_photo", note: "Customer asks for a refund" },
   { total_matches: noul("Does the total printed on receipt_photo equal 23.40?") },
   {
+    model: "myles-g-12b",
     assets: { receipt_photo: await imageFromPath("receipt.jpg") }, // or imageFromBytes(uint8ArrayOrBuffer)
     imageBudget: 140, // optional: 70, 140 or 280 (the default)
   },
@@ -87,6 +91,49 @@ Limits, checked by the server (each breach is an `InvalidRequestError` whose mes
 - Every asset must be referenced at least once. A reference inside a text state must fall within its first 20,000 characters.
 
 Images count as input tokens and are included in `usage.input_tokens`. At budget 280 one image costs up to about 280 tokens, at 140 up to about 140, at 70 up to about 70. An image referenced in the state is billed once per request however many questions read it; one referenced in a question's instructions or criteria is billed for that question, once per use.
+
+## Batches
+
+The Batch API answers many decisions from one submission, within 24 hours, at half the live price per input token. Use it for work that does not need an answer straight away: back-catalogues, nightly reviews, re-scoring after a policy change. Batch support is in version 0.5.0 and later.
+
+```ts
+import { Launchables, noul, choice } from "launchables";
+
+const client = new Launchables();
+
+const batch = await client.batch([
+  { custom_id: "ticket-1001", model: "myles-g-12b", state: "Charged twice for order 4471", questions: { refund: noul("Is a refund due?") } },
+  { custom_id: "ticket-1002", model: "myles-g-31b", state: { message: "The app crashes on login" },
+    questions: { team: choice("Which team?", ["billing", "returns", "technical", "other"]) } },
+]); // { id: "batch_...", status: "queued", lines: 2, estimated_cost, expires_at, data_region }
+
+const finished = await client.batches.waitFor(batch.id); // polls 5s, 7.5s, 11.25s ... up to 60s apart
+
+for await (const r of client.batches.streamResults(batch.id)) {
+  if (r.ok) console.log(r.custom_id, r.response.answers);   // typed exactly as decide()'s answers
+  else console.log(r.custom_id, r.error.type);             // e.g. "expired", "cancelled", "invalid_question"
+}
+```
+
+Each line is the body of one `decide` request with your own `custom_id` (1 to 64 letters, digits or `_ . : -`, unique in the batch) and a `model`, which every line must name: a batch has no default model. Field names are as they are sent: `custom_id`, `image_budget`. Lines may name different models. Images must be inline (`imageFromBytes`, `imageFromPath`); a batch line cannot carry file parts.
+
+| Call | What it does |
+| --- | --- |
+| `batch(lines, { webhookUrl? })` or `batches.create(...)` | Checks every line, sends them as one JSONL file and returns the queued batch with its cost estimate. |
+| `batches.list()` | The calling key's batches, oldest first. |
+| `batches.retrieve(id)` | Status (`queued`, `running`, `done`, `failed` or `cancelled`), counts and times. |
+| `batches.waitFor(id, options?)` | Polls until the results can be collected. The first check is at once; the wait after it, `pollInterval` (5000 ms), grows 1.5 times a check up to `maxInterval` (60000 ms), both at least 1000 ms; `timeout` (25 hours) throws `BatchTimeoutError`; `signal` stops waiting, even mid-request; `onPoll(batch)` sees each status. It keeps waiting through a brief outage (connection errors, 429 and 5xx other than `batch_unavailable`). Giving up never cancels the batch. |
+| `batches.streamResults(id)` | Each result line as it arrives, in input order, so a large file is never held in memory. |
+| `batches.results(id)` | Every result line in one array. |
+| `batches.cancel(id)` | Stops the batch. Lines already answered stay in the results and are billed; the rest read as cancelled and are not. |
+
+A result is `{ custom_id, model, status, ok, response?, error?, usage, raw }`. `status` is the HTTP status the line got (200 when answered) or `null` for a line that never ran; `model` is the exact model build that answered; `usage.input_tokens` is what the line is billed on.
+
+The client checks every line before sending and throws `ValidationError` naming the line (`line 3 (custom_id ticket-1003): ...`). The server checks every line again and refuses the whole batch if any is invalid: `InvalidRequestError` with `type` `"invalid_batch"` and each bad line in `e.body.errors` (`{ line, type, error }`), so nothing is half-queued. Other batch errors: `RateLimitError` with `type` `"too_many_batches"` when the key already has its limit of batches queued or running (not retried; `retryAfter` says when to try); `ConflictError` with `type` `"batch_not_finished"` for results before the batch has ended, or `"batch_finished"` for cancelling a batch that is already done or failed; `NotFoundError` (`"batch_not_found"`) for an id the key does not own; `APIError` with `type` `"batch_unavailable"` where the Batch API is not switched on (not retried).
+
+A submission is retried only after a refusal that stored nothing (429 `rate_limited`, 503 `busy`), never after a lost connection or a 502, so a retry cannot submit the same batch twice. Status, results and cancel calls are retried like any other.
+
+Batches belong to the API key that submitted them. A rolled key is a new key: collect a batch's results with the key that submitted it, before that key stops working. See the [Batch API documentation](https://www.launchables.ai/docs/api/batches) for limits, the 24-hour window, webhooks, retention and where batch data is stored.
 
 ## Key expiry
 
@@ -141,7 +188,7 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 | `PermissionDeniedError` | 403: the key's workspace may not use this model (`.type` `"model_not_allowed"`), or the admin key's maker is no longer an owner |
 | `RateLimitError` | 429 (`.retryAfter` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass. `.type` says what was wrong with an image: `"invalid_assets"`, `"unsupported_image_format"`, `"invalid_image"`, `"image_too_large"`, `"image_dimensions"`, `"too_many_images"`, `"unreferenced_asset"` or `"image_reference_truncated"` (400), or `"invalid_image_budget"` (422). |
-| `NotFoundError`, `ConflictError` | 404 and 409 from the key management API (subclasses of `InvalidRequestError`) |
+| `NotFoundError`, `ConflictError` | 404 and 409, from the key management API and the Batch API (subclasses of `InvalidRequestError`) |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |
 
@@ -149,7 +196,7 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 import { OutOfCreditError, RateLimitError, InvalidRequestError, LaunchablesError } from "launchables";
 
 try {
-  await client.decide(state, questions);
+  await client.decide(state, questions, "myles-g-12b");
 } catch (e) {
   if (e instanceof OutOfCreditError) console.log(e.type === "budget_exceeded" ? "workspace budget reached" : "top up credit");
   else if (e instanceof RateLimitError) console.log("slow down", e.retryAfter);
@@ -161,7 +208,7 @@ try {
 
 ## Retries
 
-429, 502, 503 and connection errors are retried up to `maxRetries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors, including 402 and 403, are thrown immediately. `timeout` is in milliseconds (default 30000) and applies to each attempt.
+429, 502, 503 and connection errors are retried (except where noted for key management and batch submissions) up to `maxRetries` times (default 3) with exponential backoff of 0.5s, 1s, 2s. A `Retry-After` header (seconds) is honoured instead, capped at 60s. Other errors, including 402 and 403, are thrown immediately. `timeout` is in milliseconds (default 30000) and applies to each attempt.
 
 ```ts
 const client = new Launchables({ apiKey: "launchables_...", timeout: 10_000, maxRetries: 5 });

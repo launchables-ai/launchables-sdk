@@ -4,4 +4,5 @@ export { imageFromBytes, imageFromPath, detectImageFormat, IMAGE_FORMATS, IMAGE_
 export { LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError, InvalidRequestError, NotFoundError, ConflictError, ValidationError, APIError, APIConnectionError, } from "./errors.js";
 export { NoulAnswer } from "./types.js";
 export { AdminKeys } from "./admin.js";
+export { Batches, BatchTimeoutError, CUSTOM_ID_PATTERN, BATCH_FINISHED_STATUSES, toJSONL } from "./batches.js";
 export { VERSION } from "./version.js";
