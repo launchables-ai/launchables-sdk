@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - Wider requests: the client-side checks now allow up to 256 questions a request, 256 options a choice and 4,096 options over a request, the API's largest limits (Myles-G 12B since 24 Oct 2026). A model on lower limits (Myles-G 31B: 16 questions, 26 options) still answers 422 with `too_many_questions` or `too_many_options`.
 
