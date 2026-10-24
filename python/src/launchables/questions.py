@@ -92,12 +92,12 @@ def validate_questions(questions: Any) -> Dict[str, Question]:
                 raise ValidationError(f"question {name!r}: choice needs criteria (options)")
             if len(crit) > MAX_OPTIONS:
                 raise ValidationError(f"question {name!r}: at most {MAX_OPTIONS} options, got {len(crit)}")
-            total += len(crit)
-            if total > MAX_OPTIONS_TOTAL:
-                raise ValidationError(f"at most {MAX_OPTIONS_TOTAL} options over all questions in one request")
         elif qtype == "score":
             if not isinstance(crit, (list, tuple)) or not crit:
                 raise ValidationError(f"question {name!r}: score needs criteria (a list of level descriptions)")
+        total += len(crit) if isinstance(crit, (Mapping, list, tuple)) and qtype != "noul" else 2  # as the server counts
+        if total > MAX_OPTIONS_TOTAL:
+            raise ValidationError(f"at most {MAX_OPTIONS_TOTAL} options over all questions in one request")
         out[name] = dict(q)
     return out
 

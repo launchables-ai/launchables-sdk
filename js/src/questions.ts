@@ -106,13 +106,14 @@ export function validateQuestions(questions: unknown): Questions {
       const n = Array.isArray(crit) ? crit.length : Object.keys(crit).length;
       if (n === 0) throw new ValidationError(`${where}choice needs criteria (options)`);
       if (n > MAX_OPTIONS) throw new ValidationError(`${where}at most ${MAX_OPTIONS} options, got ${n}`);
-      total += n;
-      if (total > MAX_OPTIONS_TOTAL) throw new ValidationError(`at most ${MAX_OPTIONS_TOTAL} options over all questions in one request`);
     } else if (q.type === "score") {
       if (!Array.isArray(crit) || crit.length === 0) {
         throw new ValidationError(`${where}score needs criteria (an array of level descriptions)`);
       }
     }
+    // every question's options count, as the server counts them (a yes/no question has two)
+    total += q.type === "noul" ? 2 : Array.isArray(crit) ? crit.length : Object.keys(crit as object).length;
+    if (total > MAX_OPTIONS_TOTAL) throw new ValidationError(`at most ${MAX_OPTIONS_TOTAL} options over all questions in one request`);
   }
   return questions as Questions;
 }
