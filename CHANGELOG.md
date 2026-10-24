@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Wider requests: the client-side checks now allow up to 256 questions a request, 256 options a choice and 4,096 options over a request, the API's largest limits (Myles-G 12B since 24 Oct 2026). A model on lower limits (Myles-G 31B: 16 questions, 26 options) still answers 422 with `too_many_questions` or `too_many_options`.
+
 ## 0.5.0
 
 - The Batch API, in both clients. `client.batch(lines)` (or `client.batches.create`) submits many decisions as one JSONL file, answered within 24 hours at half the live price per input token; `batches.list`, `retrieve`, `cancel`, `results`, a streaming results reader (`streamResults` in JavaScript, `stream_results` in Python) and `waitFor` / `wait_for`, which polls with growing waits (5 s, 1.5 times longer each time, up to 60 s), gives up after 25 hours and can be stopped early (an `AbortSignal` in JavaScript, a `threading.Event` in Python). A webhook address is `webhookUrl` / `webhook_url`. Every line is checked before sending, names its own model and carries a `custom_id`; results are typed as `decide`'s answers. A submission is retried only after a refusal that stored nothing, so a retry never makes two batches.

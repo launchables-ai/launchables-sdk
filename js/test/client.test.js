@@ -202,8 +202,8 @@ test("validation helpers", () => {
   assert.deepEqual(noul("x", { true: "a", false: "b" }).criteria, { true: "a", false: "b" });
   assert.equal("criteria" in noul("x"), false);
   assert.deepEqual(choice("x", { a: "A" }).criteria, { a: "A" });
-  choice("x", Array.from({ length: 26 }, (_, i) => String(i)));
-  assert.throws(() => choice("x", Array.from({ length: 27 }, (_, i) => String(i))), /at most 26/);
+  choice("x", Array.from({ length: 256 }, (_, i) => String(i)));
+  assert.throws(() => choice("x", Array.from({ length: 257 }, (_, i) => String(i))), /at most 256/);
   assert.throws(() => choice("x", []), ValidationError);
   assert.throws(() => choice("x", ["a", "a"]), /unique/);
   assert.throws(() => score("x", ["one"]), ValidationError);
@@ -213,8 +213,10 @@ test("validation helpers", () => {
 
 test("request-level validation sends nothing", async () => {
   const { client, calls } = setup([[200, { model: "m", answers: {} }]]);
-  const many = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`q${i}`, noul("x")]));
-  await assert.rejects(client.decide("s", many), /at most 16/);
+  const many = Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`q${i}`, noul("x")]));
+  await assert.rejects(client.decide("s", many), /at most 256/);
+  const wide = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`q${i}`, choice("x", Array.from({ length: 250 }, (_, j) => String(j)))]));
+  await assert.rejects(client.decide("s", wide), /at most 4096 options/);
   for (const bad of [{}, [], { q: "text" }, { q: { type: "bogus", instructions: "x" } },
     { q: { type: "choice", instructions: "x" } }, { q: { type: "score", instructions: "x" } }, { q: { type: "noul" } }]) {
     await assert.rejects(client.decide("s", bad), ValidationError);

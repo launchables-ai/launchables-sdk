@@ -6,8 +6,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Union
 
 from .errors import ValidationError
 
-MAX_QUESTIONS = 16
-MAX_OPTIONS = 26
+MAX_QUESTIONS = 256  # the API's largest limits (Myles-G 12B since 24 Oct 2026); a model on lower limits answers 422
+MAX_OPTIONS = 256
+MAX_OPTIONS_TOTAL = 4096  # options over all questions in one request
 QUESTION_TYPES = ("noul", "choice", "score")
 
 Question = Dict[str, Any]
@@ -75,6 +76,7 @@ def validate_questions(questions: Any) -> Dict[str, Question]:
     if len(questions) > MAX_QUESTIONS:
         raise ValidationError(f"at most {MAX_QUESTIONS} questions per request, got {len(questions)}")
     out: Dict[str, Question] = {}
+    total = 0
     for name, q in questions.items():
         if not isinstance(name, str) or not name:
             raise ValidationError("question names must be non-empty strings")
@@ -90,6 +92,9 @@ def validate_questions(questions: Any) -> Dict[str, Question]:
                 raise ValidationError(f"question {name!r}: choice needs criteria (options)")
             if len(crit) > MAX_OPTIONS:
                 raise ValidationError(f"question {name!r}: at most {MAX_OPTIONS} options, got {len(crit)}")
+            total += len(crit)
+            if total > MAX_OPTIONS_TOTAL:
+                raise ValidationError(f"at most {MAX_OPTIONS_TOTAL} options over all questions in one request")
         elif qtype == "score":
             if not isinstance(crit, (list, tuple)) or not crit:
                 raise ValidationError(f"question {name!r}: score needs criteria (a list of level descriptions)")

@@ -345,9 +345,9 @@ class ValidationTests(Base):
         self.assertEqual(choice("x", ("a", "b"))["criteria"], ["a", "b"])
 
     def test_choice_limits(self):
-        choice("x", [str(i) for i in range(26)])
-        with self.assertRaisesRegex(ValidationError, "at most 26"):
-            choice("x", [str(i) for i in range(27)])
+        choice("x", [str(i) for i in range(256)])
+        with self.assertRaisesRegex(ValidationError, "at most 256"):
+            choice("x", [str(i) for i in range(257)])
         with self.assertRaises(ValidationError):
             choice("x", [])
         with self.assertRaises(ValidationError):
@@ -366,10 +366,12 @@ class ValidationTests(Base):
             noul("  ")
 
     def test_too_many_questions(self):
-        qs = {f"q{i}": noul("x") for i in range(17)}
-        with self.assertRaisesRegex(ValidationError, "at most 16"):
+        qs = {f"q{i}": noul("x") for i in range(257)}
+        with self.assertRaisesRegex(ValidationError, "at most 256"):
             self.client.decide("s", qs)
-        self.client.decide  # 16 is fine (validated, not sent here)
+        wide = {f"q{i}": choice("x", [str(j) for j in range(250)]) for i in range(17)}
+        with self.assertRaisesRegex(ValidationError, "at most 4096 options"):
+            self.client.decide("s", wide)
         self.assertEqual(self.server.requests, [])
 
     def test_sixteen_ok(self):

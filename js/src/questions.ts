@@ -1,7 +1,9 @@
 import { ValidationError } from "./errors.js";
 
-export const MAX_QUESTIONS = 16;
-export const MAX_OPTIONS = 26;
+// The API's largest limits (Myles-G 12B since 24 Oct 2026); a model on lower limits answers 422.
+export const MAX_QUESTIONS = 256;
+export const MAX_OPTIONS = 256;
+export const MAX_OPTIONS_TOTAL = 4096; // options over all questions in one request
 
 export interface NoulQuestion {
   type: "noul";
@@ -87,6 +89,7 @@ export function validateQuestions(questions: unknown): Questions {
   if (entries.length > MAX_QUESTIONS) {
     throw new ValidationError(`at most ${MAX_QUESTIONS} questions per request, got ${entries.length}`);
   }
+  let total = 0;
   for (const [name, raw] of entries) {
     const where = `question "${name}": `;
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -103,6 +106,8 @@ export function validateQuestions(questions: unknown): Questions {
       const n = Array.isArray(crit) ? crit.length : Object.keys(crit).length;
       if (n === 0) throw new ValidationError(`${where}choice needs criteria (options)`);
       if (n > MAX_OPTIONS) throw new ValidationError(`${where}at most ${MAX_OPTIONS} options, got ${n}`);
+      total += n;
+      if (total > MAX_OPTIONS_TOTAL) throw new ValidationError(`at most ${MAX_OPTIONS_TOTAL} options over all questions in one request`);
     } else if (q.type === "score") {
       if (!Array.isArray(crit) || crit.length === 0) {
         throw new ValidationError(`${where}score needs criteria (an array of level descriptions)`);

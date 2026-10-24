@@ -49,7 +49,7 @@ resp.answers["urgency"].score         # 1.92
 resp.answers["urgency"].probabilities # {"0": 0.03, "1": 0.12, ...}
 ```
 
-Helpers validate locally and raise `ValidationError` before any request is sent: at most 16 questions per request, at most 26 options per choice, non-empty instructions.
+Helpers validate locally and raise `ValidationError` before any request is sent: at most 256 questions per request, at most 256 options per choice and 4,096 options over a request (the API's largest limits; Myles-G 31B takes 16 and 26 for now and answers 422 above them), non-empty instructions.
 
 ### Other calls
 
