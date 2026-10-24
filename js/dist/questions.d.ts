@@ -1,5 +1,6 @@
-export declare const MAX_QUESTIONS = 16;
-export declare const MAX_OPTIONS = 26;
+export declare const MAX_QUESTIONS = 256;
+export declare const MAX_OPTIONS = 256;
+export declare const MAX_OPTIONS_TOTAL = 4096;
 export interface NoulQuestion {
     type: "noul";
     instructions: string;
