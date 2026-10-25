@@ -41,7 +41,11 @@ class Server:
                     "headers": dict(self.headers.items()),
                     "body": json.loads(body) if body else None,
                 })
-                status, payload, headers = outer.script.pop(0) if outer.script else (200, {}, {})
+                step = outer.script.pop(0) if outer.script else (200, {}, {})
+                if step == "drop":  # hang up without answering
+                    self.close_connection = True
+                    return
+                status, payload, headers = step
                 data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -286,6 +290,86 @@ class ErrorTests(Base):
             self.ask()
         self.assertIsNone(cm.exception.type)
         self.assertIsNone(LaunchablesError("local").type)
+
+
+class IdempotencyTests(Base):
+    ANSWER = {"model": "m", "answers": {"q": NOUL}}
+
+    def keys(self):
+        return [r["headers"].get("Idempotency-Key") for r in self.server.requests]
+
+    def test_every_call_gets_a_new_random_key_and_every_retry_the_same_one(self):
+        self.reply(503, {"error": "busy"})
+        self.reply(502, {"error": "x"})
+        self.reply(200, self.ANSWER)
+        self.reply(200, self.ANSWER)
+        self.ask()
+        self.ask()
+        keys = self.keys()
+        self.assertEqual(len(keys), 4)
+        self.assertEqual(keys[0], keys[1])
+        self.assertEqual(keys[1], keys[2])  # one logical request, retried twice: one key
+        self.assertNotEqual(keys[2], keys[3])  # the next call: a new key
+        import uuid
+        for key in keys:
+            self.assertEqual(str(uuid.UUID(key)), key)
+            self.assertEqual(uuid.UUID(key).version, 4)
+
+    def test_the_same_key_after_a_lost_connection(self):
+        self.server.script.append("drop")
+        self.reply(200, self.ANSWER)
+        self.ask()
+        keys = self.keys()
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
+
+    def test_a_callers_own_key_is_sent(self):
+        self.reply(200, self.ANSWER)
+        self.client.decide("s", {"q": noul("x")}, model="m", idempotency_key="order-4471-refund")
+        self.assertEqual(self.keys(), ["order-4471-refund"])
+
+    def test_a_bad_key_is_refused_before_sending(self):
+        for bad in ("", "x" * 256, "caf\u00e9", "tab\there", 42):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                self.client.decide("s", {"q": noul("x")}, idempotency_key=bad)
+        self.assertEqual(self.server.requests, [])
+        self.reply(200, self.ANSWER)
+        self.client.decide("s", {"q": noul("x")}, idempotency_key="x" * 255)
+
+    def test_in_progress_is_waited_out_without_using_up_retries(self):
+        c = Launchables(api_key="k", base_url=self.server.url, max_retries=1)
+        busy = {"error": "still being answered", "type": "idempotency_in_progress", "retry_after": 2}
+        for _ in range(5):
+            self.reply(409, busy, {"Retry-After": "2"})
+        self.reply(503, {"error": "y"})
+        self.reply(200, self.ANSWER, {"Idempotent-Replayed": "true"})
+        self.assertEqual(c.decide("s", {"q": noul("x")}).answers["q"].noul, 0.04)
+        self.assertEqual(self.sleeps, [2.0] * 5 + [0.5])
+        self.assertEqual(len(set(self.keys())), 1)
+
+    def test_in_progress_gives_up_after_the_wait_limit(self):
+        busy = {"error": "still being answered", "type": "idempotency_in_progress"}
+        for _ in range(100):
+            self.reply(409, busy, {"Retry-After": "60"})
+        with self.assertRaises(ConflictError) as cm:
+            self.ask()
+        self.assertEqual(cm.exception.type, "idempotency_in_progress")
+        self.assertEqual(sum(self.sleeps), 120.0)  # 60 + 60; a third would pass 150 s
+        self.assertEqual(len(self.server.requests), 3)
+
+    def test_a_reused_key_is_raised_and_not_retried(self):
+        self.reply(422, {"error": "used for a different request", "type": "idempotency_key_reused"})
+        with self.assertRaises(InvalidRequestError) as cm:
+            self.client.decide("s", {"q": noul("x")}, idempotency_key="k1")
+        self.assertEqual(cm.exception.type, "idempotency_key_reused")
+        self.assertEqual(len(self.server.requests), 1)
+
+    def test_other_requests_carry_no_key(self):
+        self.reply(200, {"data": []})
+        self.reply(200, {"status": "ok"})
+        self.client.models()
+        self.client.health()
+        self.assertEqual(self.keys(), [None, None])
 
 
 class RetryTests(Base):

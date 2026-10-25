@@ -1,4 +1,5 @@
 import { APIConnectionError, APIError, LaunchablesError, RateLimitError, ValidationError } from "./errors.js";
+import { idempotencyHeaders } from "./idempotency.js";
 import { validateQuestions, type Questions } from "./questions.js";
 import { validateAssets, validateImageBudget, type Assets, type ImageBudget } from "./images.js";
 import { parseResponse, type DecisionResponse } from "./types.js";
@@ -110,6 +111,13 @@ export interface CreateBatchOptions {
    * to public addresses only.
    */
   webhookUrl?: string;
+  /**
+   * Identifies this submission (1 to 255 printable ASCII characters); a random one is made when it is not given, and
+   * the same key goes with every retry. Pass your own and submit again with it after an error you are unsure about (a
+   * lost connection, a timeout): if the first submission was stored, you get the same batch back instead of a second
+   * one. Lines need no key: each is identified by its `custom_id`.
+   */
+  idempotencyKey?: string;
 }
 
 export interface WaitForOptions {
@@ -242,7 +250,10 @@ export class Batches {
     if (options.webhookUrl !== undefined && (typeof options.webhookUrl !== "string" || !options.webhookUrl.startsWith("https://"))) {
       throw new ValidationError("webhookUrl must be an https address");
     }
-    const headers: Record<string, string> = options.webhookUrl ? { "Launchables-Webhook-Url": options.webhookUrl } : {};
+    const headers: Record<string, string> = {
+      ...(await idempotencyHeaders(options.idempotencyKey)),
+      ...(options.webhookUrl ? { "Launchables-Webhook-Url": options.webhookUrl } : {}),
+    };
     return (await this.t.json("POST", "/v1/batches", { body, contentType: "application/jsonl", headers, create: true })) as unknown as CreatedBatch;
   }
 

@@ -110,6 +110,13 @@ export interface CreateBatchOptions {
      * to public addresses only.
      */
     webhookUrl?: string;
+    /**
+     * Identifies this submission (1 to 255 printable ASCII characters); a random one is made when it is not given, and
+     * the same key goes with every retry. Pass your own and submit again with it after an error you are unsure about (a
+     * lost connection, a timeout): if the first submission was stored, you get the same batch back instead of a second
+     * one. Lines need no key: each is identified by its `custom_id`.
+     */
+    idempotencyKey?: string;
 }
 export interface WaitForOptions {
     /** The first wait between checks, in milliseconds (the first check is made at once). At least 1000; default 5000. */

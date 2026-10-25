@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 import warnings
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Union
 
@@ -37,6 +38,10 @@ BACKOFF_BASE = 0.5
 MAX_RETRY_AFTER = 60.0
 USER_AGENT = f"launchables-python/{__version__}"
 KEY_EXPIRY_WARNING_DAYS = 14  # warn once when a key has this many days or fewer left
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+# a repeat of a request the server is still answering is refused with 409 "idempotency_in_progress": waited out (honouring
+# Retry-After) for up to this many seconds in all, without using up max_retries, then the answer is the first one's
+IN_PROGRESS_MAX_WAIT = 150.0
 
 
 class KeyExpiryWarning(UserWarning):
@@ -52,6 +57,17 @@ def _days_until(date: str) -> Optional[int]:
     return (end - datetime.datetime.now(datetime.timezone.utc).date()).days
 
 _sleep = time.sleep  # patched in tests
+
+
+def idempotency_headers(idempotency_key: Optional[str]) -> Dict[str, str]:
+    """The Idempotency-Key header for one logical request: the caller's key, checked, or a new random UUID. The same
+    header is sent on every retry of that request, so the server answers it (and bills it) once."""
+    if idempotency_key is None:
+        return {IDEMPOTENCY_HEADER: str(uuid.uuid4())}
+    if (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 255
+            or any(not " " <= c <= "~" for c in idempotency_key)):
+        raise ValidationError("idempotency_key must be 1 to 255 printable ASCII characters")
+    return {IDEMPOTENCY_HEADER: idempotency_key}
 
 
 class _Interrupted(Exception):
@@ -117,6 +133,7 @@ class Launchables:
         *,
         assets: Optional[Mapping[str, Union[Image, Mapping[str, Any]]]] = None,
         image_budget: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> DecisionResponse:
         """Ask one or more questions about ``state`` (a string or a JSON object).
 
@@ -130,8 +147,14 @@ class Launchables:
         labels are not searched. Every asset must be referenced at least once.
 
         ``image_budget`` (70, 140 or 280) is the most visual tokens one image may use; the server uses 280 when it is
-        not given. Lower is cheaper and faster but sees less detail."""
+        not given. Lower is cheaper and faster but sees less detail.
+
+        ``idempotency_key`` (1 to 255 printable ASCII characters) identifies this request. When it is not given, the
+        client makes a random one. Either way the same key goes with every retry, so a request the server already
+        answered is returned again rather than answered and billed twice. Pass your own (for example a job id) to make a
+        decision safe to repeat across restarts of your program; use a new key for every new request."""
         key = self._resolve_key()
+        headers = idempotency_headers(idempotency_key)
         if not isinstance(state, (str, Mapping)):
             raise ValidationError("state must be a string or a JSON object (dict)")
         body: Dict[str, Any] = {"state": state, "questions": validate_questions(questions)}
@@ -141,14 +164,15 @@ class Launchables:
             body["assets"] = validate_assets(assets)
         if image_budget is not None:
             body["image_budget"] = validate_image_budget(image_budget)
-        data = self._request("POST", "/v1/decide", body, key)
+        data = self._request("POST", "/v1/decide", body, key, headers=headers)
         return parse_response(data)
 
-    def batch(self, lines: Sequence[BatchLine], webhook_url: Optional[str] = None) -> CreatedBatch:
+    def batch(self, lines: Sequence[BatchLine], webhook_url: Optional[str] = None, *,
+              idempotency_key: Optional[str] = None) -> CreatedBatch:
         """Submit a batch: many decisions answered within 24 hours at half the live price. The same as
         ``batches.create()``. Each line is a ``decide`` body (a dict) with your ``custom_id`` and its ``model``; follow it
         with ``batches.wait_for(id)`` and ``batches.results(id)``."""
-        return self.batches.create(lines, webhook_url=webhook_url)
+        return self.batches.create(lines, webhook_url=webhook_url, idempotency_key=idempotency_key)
 
     def models(self) -> List[Model]:
         # the key is optional here; when there is one, the response also tells the client when it expires
@@ -220,7 +244,7 @@ class Launchables:
 
     def _request(
         self, method: str, path: str, body: Any = None, key: Optional[str] = None,
-        base_url: Optional[str] = None, admin: bool = False,
+        base_url: Optional[str] = None, admin: bool = False, headers: Optional[Mapping[str, str]] = None,
     ) -> Dict[str, Any]:
         payload = None
         content_type = None
@@ -230,7 +254,8 @@ class Launchables:
         # a key management POST (create, roll) is retried only when the server refused it unrun (429), so a retry never
         # makes two keys
         once = (lambda status, _type: status == 429) if admin and method == "POST" else None
-        status, raw = self._send(method, path, payload, key, base_url=base_url, admin=admin, content_type=content_type, once=once)
+        status, raw = self._send(method, path, payload, key, base_url=base_url, admin=admin, content_type=content_type, once=once,
+                                 headers=headers)
         return self._decode(raw, status)
 
     def _send(
@@ -247,7 +272,11 @@ class Launchables:
         run twice: it is retried only on the (status, type) pairs it accepts, and never after a lost connection.
         ``deadline`` (a ``time.monotonic()`` value) caps each attempt's socket timeout and the waits between attempts;
         past it, ``_Interrupted`` is raised. A set ``stop`` event raises ``_Interrupted`` before an attempt or during a
-        wait between attempts (a request already in flight runs to its end)."""
+        wait between attempts (a request already in flight runs to its end).
+
+        A 409 "idempotency_in_progress" (the server is still answering an earlier attempt with the same Idempotency-Key)
+        is waited out, honouring Retry-After, for up to IN_PROGRESS_MAX_WAIT seconds in all; those waits do not count
+        against ``max_retries``. The next attempt then gets the first attempt's answer."""
         all_headers = {"User-Agent": USER_AGENT, "Accept": accept}
         if headers:
             all_headers.update(headers)
@@ -265,6 +294,7 @@ class Launchables:
             return once(status, type_) if once is not None else status in RETRY_STATUSES
 
         attempt = 0
+        waited_in_progress = 0.0
         while True:
             timeout = self.timeout
             if stop is not None and stop.is_set():
@@ -276,6 +306,7 @@ class Launchables:
                 timeout = min(timeout, left)
             req = urllib.request.Request(url, data=payload, headers=all_headers, method=method)
             retry_after: Optional[float] = None
+            in_progress = False
             try:
                 resp = urllib.request.urlopen(req, timeout=timeout)
                 try:
@@ -298,15 +329,23 @@ class Launchables:
                     self._note_key_headers(e.headers)
                 retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
                 err: LaunchablesError = self._http_error(e.code, raw, retry_after)
+                in_progress = e.code == 409 and err.type == "idempotency_in_progress"
                 ok_to_retry = retryable(e.code, err.type)
             except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError, http.client.HTTPException) as e:
                 reason = getattr(e, "reason", e)
                 err = APIConnectionError(f"Could not reach {base_url}: {reason}")
                 err.__cause__ = e
                 ok_to_retry = once is None
-            if not ok_to_retry or attempt >= self.max_retries:
+            if in_progress:  # the same request is still being answered: wait for it, then get its answer
+                delay = min(retry_after if retry_after is not None else 1.0, MAX_RETRY_AFTER)
+                if waited_in_progress + delay > IN_PROGRESS_MAX_WAIT:
+                    raise err
+                waited_in_progress += delay
+                attempt -= 1  # not a retry of a failure: it does not use up max_retries
+            elif not ok_to_retry or attempt >= self.max_retries:
                 raise err
-            delay = min(retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt), MAX_RETRY_AFTER)
+            else:
+                delay = min(retry_after if retry_after is not None else BACKOFF_BASE * (2 ** attempt), MAX_RETRY_AFTER)
             if deadline is not None and time.monotonic() + delay >= deadline:
                 raise _Interrupted()
             if stop is not None:

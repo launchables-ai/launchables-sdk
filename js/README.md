@@ -131,7 +131,7 @@ A result is `{ custom_id, model, status, ok, response?, error?, usage, raw }`. `
 
 The client checks every line before sending and throws `ValidationError` naming the line (`line 3 (custom_id ticket-1003): ...`). The server checks every line again and refuses the whole batch if any is invalid: `InvalidRequestError` with `type` `"invalid_batch"` and each bad line in `e.body.errors` (`{ line, type, error }`), so nothing is half-queued. Other batch errors: `RateLimitError` with `type` `"too_many_batches"` when the key already has its limit of batches queued or running (not retried; `retryAfter` says when to try); `ConflictError` with `type` `"batch_not_finished"` for results before the batch has ended, or `"batch_finished"` for cancelling a batch that is already done or failed; `NotFoundError` (`"batch_not_found"`) for an id the key does not own; `APIError` with `type` `"batch_unavailable"` where the Batch API is not switched on (not retried).
 
-A submission is retried only after a refusal that stored nothing (429 `rate_limited`, 503 `busy`), never after a lost connection or a 502, so a retry cannot submit the same batch twice. Status, results and cancel calls are retried like any other.
+A submission is retried only after a refusal that stored nothing (429 `rate_limited`, 503 `busy`), never after a lost connection or a 502, so a retry cannot submit the same batch twice. After such an error, submit again with the same `idempotencyKey` (pass your own): if the first submission was stored you get the same batch back, not a second one. Lines need no key; each is identified by its `custom_id`. Status, results and cancel calls are retried like any other.
 
 Batches belong to the API key that submitted them. A rolled key is a new key: collect a batch's results with the key that submitted it, before that key stops working. See the [Batch API documentation](https://www.launchables.ai/docs/api/batches) for limits, the 24-hour window, webhooks, retention and where batch data is stored.
 
@@ -213,6 +213,19 @@ try {
 ```ts
 const client = new Launchables({ apiKey: "launchables_...", timeout: 10_000, maxRetries: 5 });
 ```
+
+### Retries are never billed twice
+
+Every `decide` call and batch submission carries an `Idempotency-Key` header: a random UUID made for that call, sent again unchanged on each of its retries. If an earlier attempt was answered but the answer never reached you (a timeout or a dropped connection), the API returns that same answer, with the header `Idempotent-Replayed: true`, instead of answering and billing the request again. Answers are remembered for 24 hours after a successful answer; failed attempts are not remembered, so they are retried as new requests.
+
+Pass your own key to make a request safe to repeat across restarts of your program, for example a job or order id. Use a new key for each new request: the same key with a different request throws `InvalidRequestError` with `type` `"idempotency_key_reused"`.
+
+```ts
+const r = await client.decide(state, questions, { model: "myles-g-12b", idempotencyKey: "order-4471-refund-check" });
+const batch = await client.batch(lines, { idempotencyKey: "nightly-2026-10-25" });
+```
+
+A key is 1 to 255 printable ASCII characters (anything else throws `ValidationError` before sending). While an earlier attempt with the same key is still being answered, the API answers 409 `idempotency_in_progress`; the client waits (honouring `Retry-After`) for up to 150 seconds in all, without using up `maxRetries`, and then returns the first answer. If it is still not ready, `ConflictError` is thrown and you can call again with the same key later.
 
 ## Self-hosted endpoints
 
