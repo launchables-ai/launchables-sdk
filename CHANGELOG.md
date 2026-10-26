@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - Retries are never billed twice. Every `decide` call and batch submission now sends an `Idempotency-Key` header, a random UUID per call, the same on every retry of that call, so a request the API already answered (but whose answer was lost to a timeout or a dropped connection) is returned again instead of answered and billed a second time. Pass your own key with `idempotency_key` (Python) or `idempotencyKey` (JavaScript) to make a request safe to repeat across restarts; a key is 1 to 255 printable ASCII characters.
 - A 409 `idempotency_in_progress` (an earlier attempt with the same key is still being answered) is waited out, honouring `Retry-After`, for up to 150 seconds without using up the retry budget; then `ConflictError`. A 422 `idempotency_key_reused` (the same key with a different request) is raised at once as `InvalidRequestError`.
