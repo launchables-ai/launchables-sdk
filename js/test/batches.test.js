@@ -370,3 +370,23 @@ test("waitFor refuses a timeout longer than a timer can wait", async () => {
   await assert.rejects(client.batches.waitFor(ID, { timeout: 2 ** 31 }), RangeError);
   assert.equal(calls.length, 0);
 });
+
+test("create sends one Idempotency-Key on every retry, or the caller's own", async () => {
+  const { client, calls } = setup([[429, { error: "rate limit", type: "rate_limited" }, { "Retry-After": "1" }], [200, CREATED], [200, CREATED]]);
+  await client.batches.create([line("a")]);
+  await client.batch([line("a")], { idempotencyKey: "nightly-2026-10-25" });
+  const keys = calls.map((c) => c.headers["Idempotency-Key"]);
+  assert.equal(keys[0], keys[1]);
+  assert.equal(keys[0].length, 36);
+  assert.equal(keys[2], "nightly-2026-10-25");
+  await assert.rejects(client.batches.create([line("a")], { idempotencyKey: "" }), ValidationError);
+});
+
+test("create waits out a submission still in progress and gets the same batch", async () => {
+  const { client, sleeps } = setup([
+    [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "2" }],
+    [200, CREATED, { "Idempotent-Replayed": "true" }],
+  ]);
+  assert.equal((await client.batches.create([line("a")], { idempotencyKey: "b-1" })).id, ID);
+  assert.deepEqual(sleeps, [2000]);
+});

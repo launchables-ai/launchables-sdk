@@ -355,7 +355,8 @@ class Batches:
         status, raw = self._client._send(method, path, key=self._client._resolve_key(), **kw)
         return self._client._decode(raw, status)
 
-    def create(self, lines: Sequence[BatchLine], webhook_url: Optional[str] = None) -> CreatedBatch:
+    def create(self, lines: Sequence[BatchLine], webhook_url: Optional[str] = None, *,
+               idempotency_key: Optional[str] = None) -> CreatedBatch:
         """Submit a batch. Every line is checked here first (``ValidationError`` names the line), then the server checks
         every line again and refuses the whole batch if any is invalid (``InvalidRequestError`` with ``type``
         "invalid_batch" and the lines in ``body["errors"]``), so nothing is queued half-way.
@@ -364,11 +365,19 @@ class Batches:
         never results, and must resolve to public addresses only.
 
         The submission is retried only after a refusal that stored nothing (429 "rate_limited", 503 "busy"), never after
-        a lost connection or a 502, so a retry cannot create two batches."""
+        a lost connection or a 502, so a retry cannot create two batches.
+
+        Every submission carries an ``Idempotency-Key`` (``idempotency_key``, or a random one), the same on each retry.
+        Pass your own and submit again with it after an error you are unsure about (a lost connection, a timeout): if
+        the first submission was stored, you get the same batch back instead of a second one. Lines need no key: each is
+        identified by its ``custom_id``."""
+        from .client import idempotency_headers  # the client imports this module
+
+        idem = idempotency_headers(idempotency_key)
         body = to_jsonl(lines)
         if webhook_url is not None and (not isinstance(webhook_url, str) or not webhook_url.startswith("https://")):
             raise ValidationError("webhook_url must be an https address")
-        headers = {"Launchables-Webhook-Url": webhook_url} if webhook_url else None
+        headers = {**idem, **({"Launchables-Webhook-Url": webhook_url} if webhook_url else {})}
         data = self._json("POST", "/v1/batches", payload=body, content_type="application/jsonl", headers=headers,
                           once=_create_retryable)
         return parse_created_batch(data)

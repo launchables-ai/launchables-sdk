@@ -7,7 +7,7 @@ Client libraries for the Launchables Decision API: give it a state (text or JSON
 | Python 3.9+ | `pip install launchables` | [`python/`](python) |
 | Node 18+ / TypeScript | `npm install launchables` | [`js/`](js) |
 
-Both have no runtime dependencies, the same surface (`decide`, `noul`/`choice`/`score` helpers, `models`, `health`, `key`, `batch` and `batches`), the same error classes and the same retry rules. The API token is read from `LAUNCHABLES_API_TOKEN` by default. Keep it on a server, never in browser code.
+Both have no runtime dependencies, the same surface (`decide`, `noul`/`choice`/`score` helpers, `models`, `health`, `key`, `batch` and `batches`), the same error classes and the same retry rules. Retries are safe: each `decide` call and batch submission sends one `Idempotency-Key` on all its attempts, so an answer is never billed twice (see the Retries section of each client's README). The API token is read from `LAUNCHABLES_API_TOKEN` by default. Keep it on a server, never in browser code.
 
 Every key expires. Each response carries the key's expiry in the `Launchables-Key-Expires` header (and its id in `Launchables-Key-Id`), `GET /v1/key` returns the key's details, and both clients warn once when 14 days or fewer are left (see the Key expiry section of each client's README).
 

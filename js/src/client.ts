@@ -11,12 +11,20 @@ import { parseResponse, type DecisionResponse, type KeyExpiry, type KeyInfo, typ
 import { VERSION } from "./version.js";
 import { AdminKeys } from "./admin.js";
 import { Batches, type BatchLine, type CreateBatchOptions, type CreatedBatch } from "./batches.js";
+import { idempotencyHeaders } from "./idempotency.js";
 
 export const DEFAULT_BASE_URL = "https://api.launchables.ai";
 export const DEFAULT_ADMIN_BASE_URL = "https://console.launchables.ai";
 const RETRY_STATUSES = new Set([429, 502, 503]);
 const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
+/**
+ * A repeat of a request the server is still answering is refused with 409 "idempotency_in_progress": it is waited out
+ * (honouring Retry-After) for up to this long in all, without using up maxRetries, and then gets the first answer.
+ */
+const IN_PROGRESS_MAX_WAIT_MS = 150_000;
+/** The shortest wait between in-progress repeats, so a Retry-After of 0 still runs down IN_PROGRESS_MAX_WAIT_MS. */
+const IN_PROGRESS_MIN_WAIT_MS = 250;
 /** Warn once when a key has this many days or fewer left. */
 export const KEY_EXPIRY_WARNING_DAYS = 14;
 
@@ -38,6 +46,13 @@ export interface DecideOptions {
    * and faster but sees less detail.
    */
   imageBudget?: ImageBudget;
+  /**
+   * Identifies this request (1 to 255 printable ASCII characters). When it is not given, the client makes a random one.
+   * Either way the same key goes with every retry, so a request the server already answered is returned again rather
+   * than answered and billed twice. Pass your own (for example a job id) to make a decision safe to repeat across
+   * restarts of your program; use a new key for every new request.
+   */
+  idempotencyKey?: string;
 }
 
 export interface LaunchablesOptions {
@@ -166,7 +181,8 @@ export class Launchables {
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.assets !== undefined) body.assets = validateAssets(opts.assets);
     if (opts.imageBudget !== undefined) body.image_budget = validateImageBudget(opts.imageBudget);
-    return parseResponse<Q>(await this.request("POST", "/v1/decide", body, key));
+    const headers = await idempotencyHeaders(opts.idempotencyKey);
+    return parseResponse<Q>(await this.request("POST", "/v1/decide", body, key, undefined, headers));
   }
 
   /**
@@ -244,8 +260,9 @@ export class Launchables {
     body?: unknown,
     key?: string,
     target: Target = { baseURL: this.baseURL, admin: false },
+    headers?: Record<string, string>,
   ): Promise<Record<string, unknown>> {
-    const init: SendInit = {};
+    const init: SendInit = headers ? { headers } : {};
     if (body !== undefined) {
       init.body = JSON.stringify(body);
       init.contentType = "application/json";
@@ -260,7 +277,9 @@ export class Launchables {
    * Sends one request, retrying as the options allow, and returns the first 2xx response. With `read`, the body is read
    * inside the retry loop (a body that breaks off is a connection error, retried like one) and returned as `text`;
    * without it the body is left unread for the caller, and `done()` stops the timeout, which until then covers the whole
-   * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason.
+   * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason. A 409
+   * "idempotency_in_progress" (the server is still answering an earlier attempt with the same Idempotency-Key) is waited
+   * out, honouring Retry-After, for up to IN_PROGRESS_MAX_WAIT_MS in all, without using up maxRetries.
    */
   private async send(
     method: "GET" | "POST" | "DELETE",
@@ -281,9 +300,11 @@ export class Launchables {
     const retryable = (status: number, type: string | null) =>
       type !== "batch_unavailable" && (init.once ? init.once(status, type) : RETRY_STATUSES.has(status));
 
+    let waitedInProgressMs = 0;
     for (let attempt = 0; ; attempt++) {
       let err: LaunchablesError;
       let retryAfterMs: number | undefined;
+      let inProgress = false;
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
@@ -315,12 +336,13 @@ export class Launchables {
         const retryAfter = parseRetryAfter(res.headers.get("Retry-After"));
         retryAfterMs = retryAfter === undefined ? undefined : retryAfter * 1000;
         err = httpError(res.status, text, retryAfter);
-        if (!retryable(res.status, err.type)) throw err;
+        inProgress = res.status === 409 && err.type === "idempotency_in_progress";
+        if (!inProgress && !retryable(res.status, err.type)) throw err;
       } catch (e) {
         done();
         if (init.signal?.aborted) throw init.signal.reason;
         if (e instanceof LaunchablesError) {
-          if (!(e.status !== undefined && retryable(e.status, e.type))) throw e;
+          if (!inProgress && !(e.status !== undefined && retryable(e.status, e.type))) throw e;
           err = e;
         } else {
           const reason = e instanceof Error ? (e.cause instanceof Error ? e.cause.message : e.message) : String(e);
@@ -328,6 +350,15 @@ export class Launchables {
           (err as { cause?: unknown }).cause = e;
           if (init.once) throw err;
         }
+      }
+      if (inProgress) {
+        // the same request is still being answered: wait for it, then get its answer (not a retry of a failure)
+        const waitMs = Math.max(Math.min(retryAfterMs ?? 1000, MAX_RETRY_AFTER_MS), IN_PROGRESS_MIN_WAIT_MS);
+        if (waitedInProgressMs + waitMs > IN_PROGRESS_MAX_WAIT_MS) throw err;
+        waitedInProgressMs += waitMs;
+        attempt -= 1;
+        await abortable(this.sleep(waitMs), init.signal);
+        continue;
       }
       if (attempt >= this.maxRetries) throw err;
       await abortable(this.sleep(Math.min(retryAfterMs ?? BACKOFF_BASE_MS * 2 ** attempt, MAX_RETRY_AFTER_MS)), init.signal);

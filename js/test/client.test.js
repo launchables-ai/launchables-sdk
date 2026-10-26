@@ -590,3 +590,75 @@ test("a body that breaks off after the headers is a connection error, and is ret
     fetch: async () => new Response(new ReadableStream({ start(c) { c.error(new TypeError("terminated")); } }), { status: 200 }) });
   await assert.rejects(once.decide("state", { q: noul("Is it?") }), APIConnectionError);
 });
+
+// ---- retry protection (Idempotency-Key) ----------------------------------------------------------------------------
+
+const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const keysOf = (calls) => calls.map((c) => c.headers["Idempotency-Key"]);
+
+test("idempotency: every call gets a new random key and every retry of it the same one", async () => {
+  const answer = [200, { model: "m", answers: { q: NOUL } }];
+  const { client, calls } = setup([[503, { error: "busy" }], new TypeError("fetch failed"), answer, answer]);
+  await ask(client);
+  await ask(client);
+  const keys = keysOf(calls);
+  assert.equal(keys.length, 4);
+  assert.equal(keys[0], keys[1]);
+  assert.equal(keys[1], keys[2]); // one logical request, retried after a 503 and a lost connection: one key
+  assert.notEqual(keys[2], keys[3]); // the next call: a new key
+  for (const key of keys) assert.match(key, UUID4);
+});
+
+test("idempotency: a caller's own key is sent, and a bad one is refused before sending", async () => {
+  const { client, calls } = setup([[200, { model: "m", answers: { q: NOUL } }], [200, { model: "m", answers: { q: NOUL } }]]);
+  await client.decide("s", { q: noul("x") }, { model: "m", idempotencyKey: "order-4471-refund" });
+  assert.deepEqual(keysOf(calls), ["order-4471-refund"]);
+  for (const bad of ["", "x".repeat(256), "café", "tab\there", 42]) {
+    await assert.rejects(client.decide("s", { q: noul("x") }, { idempotencyKey: bad }), ValidationError);
+  }
+  assert.equal(calls.length, 1);
+  await client.decide("s", { q: noul("x") }, { idempotencyKey: "x".repeat(255) });
+  assert.equal(calls.length, 2);
+});
+
+test("idempotency: in progress is waited out without using up retries", async () => {
+  const busy = [409, { error: "still being answered", type: "idempotency_in_progress", retry_after: 2 }, { "Retry-After": "2" }];
+  const { client, calls, sleeps } = setup(
+    [busy, busy, busy, busy, busy, [503, { error: "y" }], [200, { model: "m", answers: { q: NOUL } }, { "Idempotent-Replayed": "true" }]],
+    { maxRetries: 1 },
+  );
+  assert.equal((await ask(client)).answers.q.noul, 0.04);
+  assert.deepEqual(sleeps, [2000, 2000, 2000, 2000, 2000, 500]);
+  assert.equal(new Set(keysOf(calls)).size, 1);
+});
+
+test("idempotency: in progress gives up after the wait limit with a ConflictError", async () => {
+  const busy = () => [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "60" }];
+  const { client, calls, sleeps } = setup(Array.from({ length: 10 }, busy));
+  await assert.rejects(ask(client), (e) => e instanceof ConflictError && e.type === "idempotency_in_progress");
+  assert.deepEqual(sleeps, [60000, 60000]); // a third wait would pass 150 s
+  assert.equal(calls.length, 3);
+});
+
+test("idempotency: Retry-After 0 on in progress still ends at the wait limit", async () => {
+  const busy = () => [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "0" }];
+  const { client, calls, sleeps } = setup(Array.from({ length: 700 }, busy));
+  await assert.rejects(ask(client), (e) => e instanceof ConflictError && e.type === "idempotency_in_progress");
+  assert.ok(sleeps.every((ms) => ms === 250), "each wait is at least 250 ms");
+  assert.equal(sleeps.length, 600); // 600 x 250 ms = 150 s
+  assert.equal(calls.length, 601);
+});
+
+test("idempotency: a reused key is raised at once; other requests carry no key", async () => {
+  const { client, calls, sleeps } = setup([
+    [422, { error: "used for a different request", type: "idempotency_key_reused" }],
+    [200, { data: [] }],
+    [200, { status: "ok" }],
+  ]);
+  await assert.rejects(client.decide("s", { q: noul("x") }, { idempotencyKey: "k1" }),
+    (e) => e instanceof InvalidRequestError && e.type === "idempotency_key_reused");
+  assert.deepEqual(sleeps, []);
+  await client.models();
+  await client.health();
+  assert.deepEqual(keysOf(calls).slice(1), [undefined, undefined]);
+});

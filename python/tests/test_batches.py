@@ -223,6 +223,25 @@ class CreateTests(Base):
         self.assertEqual((cm.exception.type, cm.exception.retry_after), ("too_many_batches", 300.0))
         self.assertEqual(len(self.server.requests), 1)
 
+    def test_create_sends_one_idempotency_key_on_every_retry_and_a_callers_own(self):
+        self.reply(429, {"error": "rate limit", "type": "rate_limited"}, {"Retry-After": "1"})
+        self.reply(200, CREATED)
+        self.reply(200, CREATED)
+        self.client.batches.create([line("a")])
+        self.client.batch([line("a")], idempotency_key="nightly-2026-10-25")
+        keys = [r["headers"].get("Idempotency-Key") for r in self.server.requests]
+        self.assertEqual(keys[0], keys[1])
+        self.assertEqual(len(keys[0]), 36)
+        self.assertEqual(keys[2], "nightly-2026-10-25")
+        with self.assertRaises(ValidationError):
+            self.client.batches.create([line("a")], idempotency_key="")
+
+    def test_create_waits_out_a_submission_still_in_progress(self):
+        self.reply(409, {"error": "still being answered", "type": "idempotency_in_progress"}, {"Retry-After": "2"})
+        self.reply(200, CREATED, {"Idempotent-Replayed": "true"})
+        self.assertEqual(self.client.batches.create([line("a")], idempotency_key="b-1").id, ID)
+        self.assertEqual(self.sleeps, [2.0])
+
     def test_a_503_without_busy_is_not_retried(self):
         self.reply(503, {"error": "maintenance"})
         with self.assertRaises(APIError):

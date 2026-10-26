@@ -1,4 +1,5 @@
 import { APIConnectionError, APIError, LaunchablesError, RateLimitError, ValidationError } from "./errors.js";
+import { idempotencyHeaders } from "./idempotency.js";
 import { validateQuestions } from "./questions.js";
 import { validateAssets, validateImageBudget } from "./images.js";
 import { parseResponse } from "./types.js";
@@ -115,7 +116,10 @@ export class Batches {
         if (options.webhookUrl !== undefined && (typeof options.webhookUrl !== "string" || !options.webhookUrl.startsWith("https://"))) {
             throw new ValidationError("webhookUrl must be an https address");
         }
-        const headers = options.webhookUrl ? { "Launchables-Webhook-Url": options.webhookUrl } : {};
+        const headers = {
+            ...(await idempotencyHeaders(options.idempotencyKey)),
+            ...(options.webhookUrl ? { "Launchables-Webhook-Url": options.webhookUrl } : {}),
+        };
         return (await this.t.json("POST", "/v1/batches", { body, contentType: "application/jsonl", headers, create: true }));
     }
     /** Every batch of the calling key, oldest first (until it is deleted). */
