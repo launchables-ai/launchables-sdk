@@ -16,6 +16,8 @@ const MAX_RETRY_AFTER_MS = 60_000;
  * (honouring Retry-After) for up to this long in all, without using up maxRetries, and then gets the first answer.
  */
 const IN_PROGRESS_MAX_WAIT_MS = 150_000;
+/** The shortest wait between in-progress repeats, so a Retry-After of 0 still runs down IN_PROGRESS_MAX_WAIT_MS. */
+const IN_PROGRESS_MIN_WAIT_MS = 250;
 /** Warn once when a key has this many days or fewer left. */
 export const KEY_EXPIRY_WARNING_DAYS = 14;
 /** Whole days from today (UTC) to a YYYY-MM-DD date, or undefined if it is not one. */
@@ -271,7 +273,7 @@ export class Launchables {
             }
             if (inProgress) {
                 // the same request is still being answered: wait for it, then get its answer (not a retry of a failure)
-                const waitMs = Math.min(retryAfterMs ?? 1000, MAX_RETRY_AFTER_MS);
+                const waitMs = Math.max(Math.min(retryAfterMs ?? 1000, MAX_RETRY_AFTER_MS), IN_PROGRESS_MIN_WAIT_MS);
                 if (waitedInProgressMs + waitMs > IN_PROGRESS_MAX_WAIT_MS)
                     throw err;
                 waitedInProgressMs += waitMs;

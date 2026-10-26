@@ -640,6 +640,15 @@ test("idempotency: in progress gives up after the wait limit with a ConflictErro
   assert.equal(calls.length, 3);
 });
 
+test("idempotency: Retry-After 0 on in progress still ends at the wait limit", async () => {
+  const busy = () => [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "0" }];
+  const { client, calls, sleeps } = setup(Array.from({ length: 700 }, busy));
+  await assert.rejects(ask(client), (e) => e instanceof ConflictError && e.type === "idempotency_in_progress");
+  assert.ok(sleeps.every((ms) => ms === 250), "each wait is at least 250 ms");
+  assert.equal(sleeps.length, 600); // 600 x 250 ms = 150 s
+  assert.equal(calls.length, 601);
+});
+
 test("idempotency: a reused key is raised at once; other requests carry no key", async () => {
   const { client, calls, sleeps } = setup([
     [422, { error: "used for a different request", type: "idempotency_key_reused" }],

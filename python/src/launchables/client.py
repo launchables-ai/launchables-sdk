@@ -42,6 +42,8 @@ IDEMPOTENCY_HEADER = "Idempotency-Key"
 # a repeat of a request the server is still answering is refused with 409 "idempotency_in_progress": waited out (honouring
 # Retry-After) for up to this many seconds in all, without using up max_retries, then the answer is the first one's
 IN_PROGRESS_MAX_WAIT = 150.0
+# the shortest wait between in-progress repeats, so a Retry-After of 0 still runs down IN_PROGRESS_MAX_WAIT
+IN_PROGRESS_MIN_WAIT = 0.25
 
 
 class KeyExpiryWarning(UserWarning):
@@ -337,7 +339,7 @@ class Launchables:
                 err.__cause__ = e
                 ok_to_retry = once is None
             if in_progress:  # the same request is still being answered: wait for it, then get its answer
-                delay = min(retry_after if retry_after is not None else 1.0, MAX_RETRY_AFTER)
+                delay = max(min(retry_after if retry_after is not None else 1.0, MAX_RETRY_AFTER), IN_PROGRESS_MIN_WAIT)
                 if waited_in_progress + delay > IN_PROGRESS_MAX_WAIT:
                     raise err
                 waited_in_progress += delay

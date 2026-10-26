@@ -357,6 +357,16 @@ class IdempotencyTests(Base):
         self.assertEqual(sum(self.sleeps), 120.0)  # 60 + 60; a third would pass 150 s
         self.assertEqual(len(self.server.requests), 3)
 
+    def test_in_progress_with_retry_after_zero_still_ends(self):
+        busy = {"error": "still being answered", "type": "idempotency_in_progress"}
+        for _ in range(700):
+            self.reply(409, busy, {"Retry-After": "0"})
+        with self.assertRaises(ConflictError):
+            self.ask()
+        self.assertTrue(all(s == 0.25 for s in self.sleeps))  # at least 250 ms a wait
+        self.assertEqual(len(self.sleeps), 600)  # 600 x 0.25 s = 150 s
+        self.assertEqual(len(self.server.requests), 601)
+
     def test_a_reused_key_is_raised_and_not_retried(self):
         self.reply(422, {"error": "used for a different request", "type": "idempotency_key_reused"})
         with self.assertRaises(InvalidRequestError) as cm:
