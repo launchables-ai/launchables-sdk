@@ -100,8 +100,9 @@ class Batch:
     estimated_cost: BatchCostEstimate
     data_region: Optional[str]
     delete_after: Optional[str]  # when the batch and its results are deleted at the latest; None while it runs
-    results_deleted_at: Optional[str] = None  # when the results were deleted (downloaded once, or 24 hours passed)
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    # last, so a Batch built positionally keeps its fields where they were
+    results_deleted_at: Optional[str] = None  # when the results were deleted (downloaded once, or 24 hours passed)
 
 
 @dataclass(frozen=True)
