@@ -7,9 +7,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 from launchables import (
-    APIConnectionError, APIError, AnsweredBatchResult, Batch, BatchTimeoutError, BatchWaitCancelledError, ConflictError,
+    APIConnectionError, APIError, AnsweredBatchResult, Batch, BatchResultsDeletedError, BatchTimeoutError, BatchWaitCancelledError, ConflictError,
     CreatedBatch, FailedBatchResult, Image, InvalidRequestError, Launchables, LaunchablesError, NoulAnswer, NotFoundError,
-    RateLimitError, ValidationError, choice, noul, to_jsonl,
+    IdempotencyKeyAlreadyUsedError, RateLimitError, ValidationError, choice, noul, to_jsonl,
 )
 from launchables import client as client_module
 from launchables.batches import finished, parse_batch
@@ -238,8 +238,22 @@ class CreateTests(Base):
 
     def test_create_waits_out_a_submission_still_in_progress(self):
         self.reply(409, {"error": "still being answered", "type": "idempotency_in_progress"}, {"Retry-After": "2"})
-        self.reply(200, CREATED, {"Idempotent-Replayed": "true"})
+        self.reply(200, CREATED)  # the first attempt was refused, so this one is stored
         self.assertEqual(self.client.batches.create([line("a")], idempotency_key="b-1").id, ID)
+        self.assertEqual(self.sleeps, [2.0])
+
+    def test_a_submission_already_stored_names_its_batch_and_is_not_retried(self):
+        self.reply(409, {"error": "still being answered", "type": "idempotency_in_progress"}, {"Retry-After": "2"})
+        self.reply(409, {"error": "already used", "type": "idempotency_key_already_used",
+                         "request_id": "req_0123456789abcdef", "batch_id": ID})
+        with self.assertRaises(IdempotencyKeyAlreadyUsedError) as cm:
+            self.client.batches.create([line("a")], idempotency_key="b-1")
+        e = cm.exception
+        self.assertEqual(e.batch_id, ID)
+        self.assertEqual(e.request_id, "req_0123456789abcdef")
+        self.assertIn(ID, e.message)
+        self.assertIn("retrieve", e.message)
+        self.assertEqual(len(self.server.requests), 2)
         self.assertEqual(self.sleeps, [2.0])
 
     def test_a_503_without_busy_is_not_retried(self):
@@ -335,6 +349,35 @@ class ResultsTests(Base):
     def test_a_results_file_without_a_final_newline_still_gives_its_last_line(self):
         self.reply(200, json.dumps(ANSWERED).encode())
         self.assertEqual(len(self.client.batches.results(ID)), 1)
+
+    DELETED = {"error": "this batch's results were deleted: results are deleted as soon as they have been downloaded "
+                        "once, and at the latest 24 hours after the batch finished", "type": "batch_results_deleted",
+               "results_deleted_at": "2026-10-28T09:00:00+00:00"}
+
+    def test_results_already_downloaded_are_gone_and_not_retried(self):
+        self.reply(200, jsonl(ANSWERED, EXPIRED))
+        self.reply(410, self.DELETED)
+        self.reply(410, self.DELETED)
+        self.assertEqual(len(self.client.batches.results(ID)), 2)
+        for read in (self.client.batches.results, lambda i: list(self.client.batches.stream_results(i))):
+            with self.assertRaises(BatchResultsDeletedError) as cm:
+                read(ID)
+            e = cm.exception
+            self.assertIsInstance(e, InvalidRequestError)
+            self.assertEqual((e.status, e.type), (410, "batch_results_deleted"))
+            self.assertEqual(e.results_deleted_at, "2026-10-28T09:00:00+00:00")
+            self.assertIn("one download", e.message)
+            self.assertIn("24 hours", e.message)
+            self.assertEqual(e.server_message, self.DELETED["error"])
+        self.assertEqual(len(self.server.requests), 3)
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_status_says_when_the_results_were_deleted(self):
+        self.reply(200, {**status("done", counts(2, 0, 0)), "results_available": False,
+                         "results_deleted_at": "2026-10-28T09:00:00+00:00"})
+        b = self.client.batches.retrieve(ID)
+        self.assertEqual(b.results_deleted_at, "2026-10-28T09:00:00+00:00")
+        self.assertIsNone(parse_batch(status("done", counts(2, 0, 0))).results_deleted_at)
 
     def test_results_before_the_batch_ends_is_a_conflict(self):
         self.reply(409, {"error": "the batch is running; results are ready once it is done", "type": "batch_not_finished"})

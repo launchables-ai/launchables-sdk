@@ -40,7 +40,8 @@ USER_AGENT = f"launchables-python/{__version__}"
 KEY_EXPIRY_WARNING_DAYS = 14  # warn once when a key has this many days or fewer left
 IDEMPOTENCY_HEADER = "Idempotency-Key"
 # a repeat of a request the server is still answering is refused with 409 "idempotency_in_progress": waited out (honouring
-# Retry-After) for up to this many seconds in all, without using up max_retries, then the answer is the first one's
+# Retry-After) for up to this many seconds in all, without using up max_retries. The answer is not stored, so if the first
+# attempt is then answered, the repeat gets 409 "idempotency_key_already_used" (IdempotencyKeyAlreadyUsedError)
 IN_PROGRESS_MAX_WAIT = 150.0
 # the shortest wait between in-progress repeats, so a Retry-After of 0 still runs down IN_PROGRESS_MAX_WAIT
 IN_PROGRESS_MIN_WAIT = 0.25
@@ -152,9 +153,11 @@ class Launchables:
         not given. Lower is cheaper and faster but sees less detail.
 
         ``idempotency_key`` (1 to 255 printable ASCII characters) identifies this request. When it is not given, the
-        client makes a random one. Either way the same key goes with every retry, so a request the server already
-        answered is returned again rather than answered and billed twice. Pass your own (for example a job id) to make a
-        decision safe to repeat across restarts of your program; use a new key for every new request."""
+        client makes a random one. Either way the same key goes with every retry, so a request is never answered and
+        billed twice. The API does not store answers: if a retry reaches it after the first attempt was answered (for
+        example when the answer was lost to a timeout), ``IdempotencyKeyAlreadyUsedError`` is raised, with the answered
+        request's ``request_id``. If you need the answer, send the request again with a new key; it is then answered,
+        and billed, again. Use a new key for every new request."""
         key = self._resolve_key()
         headers = idempotency_headers(idempotency_key)
         if not isinstance(state, (str, Mapping)):
@@ -278,7 +281,8 @@ class Launchables:
 
         A 409 "idempotency_in_progress" (the server is still answering an earlier attempt with the same Idempotency-Key)
         is waited out, honouring Retry-After, for up to IN_PROGRESS_MAX_WAIT seconds in all; those waits do not count
-        against ``max_retries``. The next attempt then gets the first attempt's answer."""
+        against ``max_retries``. If the first attempt was answered meanwhile, the next attempt gets 409
+        "idempotency_key_already_used", which is never retried (the answer is not stored, so it cannot be sent again)."""
         all_headers = {"User-Agent": USER_AGENT, "Accept": accept}
         if headers:
             all_headers.update(headers)
@@ -338,7 +342,7 @@ class Launchables:
                 err = APIConnectionError(f"Could not reach {base_url}: {reason}")
                 err.__cause__ = e
                 ok_to_retry = once is None
-            if in_progress:  # the same request is still being answered: wait for it, then get its answer
+            if in_progress:  # the same request is still being answered: wait for it to finish
                 delay = max(min(retry_after if retry_after is not None else 1.0, MAX_RETRY_AFTER), IN_PROGRESS_MIN_WAIT)
                 if waited_in_progress + delay > IN_PROGRESS_MAX_WAIT:
                     raise err

@@ -20,7 +20,8 @@ const BACKOFF_BASE_MS = 500;
 const MAX_RETRY_AFTER_MS = 60_000;
 /**
  * A repeat of a request the server is still answering is refused with 409 "idempotency_in_progress": it is waited out
- * (honouring Retry-After) for up to this long in all, without using up maxRetries, and then gets the first answer.
+ * (honouring Retry-After) for up to this long in all, without using up maxRetries. The answer is not stored, so if the
+ * first attempt is then answered, the repeat gets 409 "idempotency_key_already_used" (IdempotencyKeyAlreadyUsedError).
  */
 const IN_PROGRESS_MAX_WAIT_MS = 150_000;
 /** The shortest wait between in-progress repeats, so a Retry-After of 0 still runs down IN_PROGRESS_MAX_WAIT_MS. */
@@ -48,9 +49,11 @@ export interface DecideOptions {
   imageBudget?: ImageBudget;
   /**
    * Identifies this request (1 to 255 printable ASCII characters). When it is not given, the client makes a random one.
-   * Either way the same key goes with every retry, so a request the server already answered is returned again rather
-   * than answered and billed twice. Pass your own (for example a job id) to make a decision safe to repeat across
-   * restarts of your program; use a new key for every new request.
+   * Either way the same key goes with every retry, so a request is never answered and billed twice. The API does not
+   * store answers: if a retry reaches it after the first attempt was answered (for example when the answer was lost to a
+   * timeout), `IdempotencyKeyAlreadyUsedError` is thrown, with the answered request's `requestId`. If you need the
+   * answer, send the request again with a new key; it is then answered, and billed, again. Use a new key for every new
+   * request.
    */
   idempotencyKey?: string;
 }
@@ -279,7 +282,8 @@ export class Launchables {
    * without it the body is left unread for the caller, and `done()` stops the timeout, which until then covers the whole
    * exchange. `signal` ends the request, and any wait between attempts, with the signal's reason. A 409
    * "idempotency_in_progress" (the server is still answering an earlier attempt with the same Idempotency-Key) is waited
-   * out, honouring Retry-After, for up to IN_PROGRESS_MAX_WAIT_MS in all, without using up maxRetries.
+   * out, honouring Retry-After, for up to IN_PROGRESS_MAX_WAIT_MS in all, without using up maxRetries. If the first
+   * attempt was answered meanwhile, the next attempt gets 409 "idempotency_key_already_used", which is never retried.
    */
   private async send(
     method: "GET" | "POST" | "DELETE",
@@ -352,7 +356,7 @@ export class Launchables {
         }
       }
       if (inProgress) {
-        // the same request is still being answered: wait for it, then get its answer (not a retry of a failure)
+        // the same request is still being answered: wait for it to finish (not a retry of a failure)
         const waitMs = Math.max(Math.min(retryAfterMs ?? 1000, MAX_RETRY_AFTER_MS), IN_PROGRESS_MIN_WAIT_MS);
         if (waitedInProgressMs + waitMs > IN_PROGRESS_MAX_WAIT_MS) throw err;
         waitedInProgressMs += waitMs;

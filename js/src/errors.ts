@@ -57,6 +57,62 @@ export class NotFoundError extends InvalidRequestError {}
 /** 409: the change conflicts with the organisation's state, e.g. its key limit or an archived workspace (key management API). */
 export class ConflictError extends InvalidRequestError {}
 
+/**
+ * 409 "idempotency_key_already_used": a request with this `Idempotency-Key` was already answered. It is not retried: the
+ * API does not store answers, so it cannot send the original answer again.
+ *
+ * `requestId` is the id of the request that was answered (its `X-Request-Id`), and `batchId` the batch that a batch
+ * submission created (follow it with `client.batches.retrieve(batchId)`). Nothing was billed for this repeat. If you
+ * lost the answer, send the request again with a new `idempotencyKey` (or none, for a random one): it is then answered,
+ * and billed, as a new request.
+ */
+export class IdempotencyKeyAlreadyUsedError extends ConflictError {
+  /** The id of the request that was answered, or null if the server did not say. */
+  readonly requestId: string | null;
+  /** For a batch submission, the id of the batch it created; otherwise null. */
+  readonly batchId: string | null;
+
+  constructor(message: string, status: number = 409, body?: unknown) {
+    const b = (typeof body === "object" && body !== null ? body : {}) as { request_id?: unknown; batch_id?: unknown };
+    const requestId = typeof b.request_id === "string" ? b.request_id : null;
+    const batchId = typeof b.batch_id === "string" ? b.batch_id : null;
+    super(
+      batchId
+        ? `this batch was already submitted as ${batchId}; follow it with client.batches.retrieve("${batchId}")`
+        : `this request was already answered${requestId ? ` (request id ${requestId})` : ""}. The answer is not stored, ` +
+            "so it cannot be sent again; if you lost it, send the request again with a new idempotencyKey (it will be " +
+            "answered and billed again)",
+      status,
+      body,
+    );
+    this.requestId = requestId;
+    this.batchId = batchId;
+    (this as { serverMessage: string }).serverMessage = message; // the guidance above is the message
+  }
+}
+
+/**
+ * 410 "batch_results_deleted": the batch's results are gone. Results are kept for one download: they are deleted as soon
+ * as they have been sent in full, and results never downloaded are deleted 24 hours after the batch finished. Save the
+ * results when you first download them. `resultsDeletedAt` says when they were deleted.
+ */
+export class BatchResultsDeletedError extends InvalidRequestError {
+  /** When the results were deleted (ISO 8601), or null if the server did not say. */
+  readonly resultsDeletedAt: string | null;
+
+  constructor(message: string, status: number = 410, body?: unknown) {
+    super(
+      "this batch's results were deleted: results are kept for one download (deleted once sent in full) or, if never " +
+        "downloaded, for 24 hours after the batch finished",
+      status,
+      body,
+    );
+    const at = (typeof body === "object" && body !== null ? body : {}) as { results_deleted_at?: unknown };
+    this.resultsDeletedAt = typeof at.results_deleted_at === "string" ? at.results_deleted_at : null;
+    (this as { serverMessage: string }).serverMessage = message; // the guidance above is the message
+  }
+}
+
 /** Thrown locally, before any request is sent, for malformed input. */
 export class ValidationError extends InvalidRequestError {}
 
@@ -76,7 +132,10 @@ export function errorForStatus(
   if (status === 402) return new OutOfCreditError(message, status, body);
   if (status === 403) return new PermissionDeniedError(message, status, body);
   if (status === 404) return new NotFoundError(message, status, body);
+  const type = typeof body === "object" && body !== null ? (body as { type?: unknown }).type : undefined;
+  if (status === 409 && type === "idempotency_key_already_used") return new IdempotencyKeyAlreadyUsedError(message, status, body);
   if (status === 409) return new ConflictError(message, status, body);
+  if (status === 410 && type === "batch_results_deleted") return new BatchResultsDeletedError(message, status, body);
   if (status === 429) return new RateLimitError(message, status, body, retryAfter);
   if (status >= 400 && status < 500) return new InvalidRequestError(message, status, body);
   return new APIError(message, status, body);

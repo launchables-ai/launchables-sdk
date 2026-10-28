@@ -131,7 +131,9 @@ A result is `{ custom_id, model, status, ok, response?, error?, usage, raw }`. `
 
 The client checks every line before sending and throws `ValidationError` naming the line (`line 3 (custom_id ticket-1003): ...`). The server checks every line again and refuses the whole batch if any is invalid: `InvalidRequestError` with `type` `"invalid_batch"` and each bad line in `e.body.errors` (`{ line, type, error }`), so nothing is half-queued. Other batch errors: `RateLimitError` with `type` `"too_many_batches"` when the key already has its limit of batches queued or running (not retried; `retryAfter` says when to try); `ConflictError` with `type` `"batch_not_finished"` for results before the batch has ended, or `"batch_finished"` for cancelling a batch that is already done or failed; `NotFoundError` (`"batch_not_found"`) for an id the key does not own; `APIError` with `type` `"batch_unavailable"` where the Batch API is not switched on (not retried).
 
-A submission is retried only after a refusal that stored nothing (429 `rate_limited`, 503 `busy`), never after a lost connection or a 502, so a retry cannot submit the same batch twice. After such an error, submit again with the same `idempotencyKey` (pass your own): if the first submission was stored you get the same batch back, not a second one. Lines need no key; each is identified by its `custom_id`. Status, results and cancel calls are retried like any other.
+A submission is retried only after a refusal that stored nothing (429 `rate_limited`, 503 `busy`), never after a lost connection or a 502, so a retry cannot submit the same batch twice. After such an error, submit again with the same `idempotencyKey` (pass your own): if the first submission was stored, no second batch is made and `IdempotencyKeyAlreadyUsedError` is thrown, its `.batchId` naming the first batch, so you can follow it with `batches.retrieve`. Lines need no key; each is identified by its `custom_id`. Status, results and cancel calls are retried like any other.
+
+Results can be downloaded once. They are deleted as soon as they have been sent to you in full, and results that are never downloaded are deleted 24 hours after the batch finished. After that, `results` and `streamResults` throws `BatchResultsDeletedError` (410, `.type` `"batch_results_deleted"`, `.resultsDeletedAt` says when), so save the results as you read them. A batch's status shows `results_deleted_at` once they are gone.
 
 Batches belong to the API key that submitted them. A rolled key is a new key: collect a batch's results with the key that submitted it, before that key stops working. See the [Batch API documentation](https://www.launchables.ai/docs/api/batches) for limits, the 24-hour window, webhooks, retention and where batch data is stored.
 
@@ -179,7 +181,7 @@ Key lifetimes are 30, 90, 180 or 365 days (90 by default), never longer than you
 
 ## Error handling
 
-All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `null` if it sent none).
+All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.body` and `.type` (the server's error type, such as `"out_of_credit"`, or `null` if it sent none). For `IdempotencyKeyAlreadyUsedError` and `BatchResultsDeletedError`, the error's `message` is the client's explanation of what to do; `.serverMessage` is still the server's.
 
 | Error | When |
 | --- | --- |
@@ -189,6 +191,8 @@ All errors extend `LaunchablesError` and carry `.status`, `.serverMessage`, `.bo
 | `RateLimitError` | 429 (`.retryAfter` seconds, if sent) |
 | `InvalidRequestError` | 400, 411, 413, 422 and other 4xx; `ValidationError` is the local pre-flight subclass. `.type` says what was wrong with an image: `"invalid_assets"`, `"unsupported_image_format"`, `"invalid_image"`, `"image_too_large"`, `"image_dimensions"`, `"too_many_images"`, `"unreferenced_asset"` or `"image_reference_truncated"` (400), or `"invalid_image_budget"` (422). |
 | `NotFoundError`, `ConflictError` | 404 and 409, from the key management API and the Batch API (subclasses of `InvalidRequestError`) |
+| `IdempotencyKeyAlreadyUsedError` | 409 `"idempotency_key_already_used"`: a request with this `Idempotency-Key` was already answered. Never retried. `.requestId` names the answered request and `.batchId` the batch a submission created. A subclass of `ConflictError` (see Retries) |
+| `BatchResultsDeletedError` | 410 `"batch_results_deleted"`: the batch's results were already downloaded once, or were never downloaded within 24 hours of the batch finishing. A subclass of `InvalidRequestError` |
 | `APIError` | 5xx |
 | `APIConnectionError` | could not reach the server (including timeouts) |
 
@@ -216,7 +220,7 @@ const client = new Launchables({ apiKey: "launchables_...", timeout: 10_000, max
 
 ### Retries are never billed twice
 
-Every `decide` call and batch submission carries an `Idempotency-Key` header: a random UUID made for that call, sent again unchanged on each of its retries. If an earlier attempt was answered but the answer never reached you (a timeout or a dropped connection), the API returns that same answer, with the header `Idempotent-Replayed: true`, instead of answering and billing the request again. Answers are remembered for 24 hours after a successful answer; failed attempts are not remembered, so they are retried as new requests.
+Every `decide` call and batch submission carries an `Idempotency-Key` header: a random UUID made for that call, sent again unchanged on each of its retries, so a request is never answered and billed twice. The API does not store your requests or its answers, so it cannot send an answer again. If an earlier attempt was answered but the answer never reached you (a timeout or a dropped connection), the retry is refused with 409 `idempotency_key_already_used` and the client throws `IdempotencyKeyAlreadyUsedError`, with `.requestId` naming the request that was answered (and, for a batch submission, `.batchId`). It is not retried, and the refused repeat is not billed and does not count towards your rate or daily limits. If you need the answer, send the request again with a new key: it is then answered, and billed, as a new request. Keys are remembered for 24 hours after a successful answer; failed attempts are not remembered, so they are retried as new requests.
 
 Pass your own key to make a request safe to repeat across restarts of your program, for example a job or order id. Use a new key for each new request: the same key with a different request throws `InvalidRequestError` with `type` `"idempotency_key_reused"`.
 
@@ -225,7 +229,20 @@ const r = await client.decide(state, questions, { model: "myles-g-12b", idempote
 const batch = await client.batch(lines, { idempotencyKey: "nightly-2026-10-25" });
 ```
 
-A key is 1 to 255 printable ASCII characters (anything else throws `ValidationError` before sending). While an earlier attempt with the same key is still being answered, the API answers 409 `idempotency_in_progress`; the client waits (honouring `Retry-After`) for up to 150 seconds in all, without using up `maxRetries`, and then returns the first answer. If it is still not ready, `ConflictError` is thrown and you can call again with the same key later.
+A key is 1 to 255 printable ASCII characters (anything else throws `ValidationError` before sending). While an earlier attempt with the same key is still being answered, the API answers 409 `idempotency_in_progress`; the client waits (honouring `Retry-After`) for up to 150 seconds in all, without using up `maxRetries`, and asks again. If the first attempt was answered meanwhile, that repeat is refused as above (`IdempotencyKeyAlreadyUsedError`). If it is still not finished after 150 seconds, `ConflictError` is thrown and you can call again with the same key later.
+
+```ts
+import { IdempotencyKeyAlreadyUsedError } from "launchables";
+
+let r;
+try {
+  r = await client.decide(state, questions, { model: "myles-g-12b", idempotencyKey: job.key });
+} catch (e) {
+  if (!(e instanceof IdempotencyKeyAlreadyUsedError)) throw e;
+  // answered before (e.requestId) but the answer was lost; ask again under a new key (billed again)
+  r = await client.decide(state, questions, { model: "myles-g-12b", idempotencyKey: `${job.key}-retry` });
+}
+```
 
 ## Self-hosted endpoints
 
