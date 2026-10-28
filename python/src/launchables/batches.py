@@ -99,8 +99,10 @@ class Batch:
     webhook: bool  # whether a webhook address was given (the address itself is never shown)
     estimated_cost: BatchCostEstimate
     data_region: Optional[str]
-    delete_after: Optional[str]  # when the batch and its results are deleted; None while it runs
+    delete_after: Optional[str]  # when the batch and its results are deleted at the latest; None while it runs
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    # last, so a Batch built positionally keeps its fields where they were
+    results_deleted_at: Optional[str] = None  # when the results were deleted (downloaded once, or 24 hours passed)
 
 
 @dataclass(frozen=True)
@@ -210,7 +212,7 @@ def parse_batch(data: Dict[str, Any]) -> Batch:
         finished_at=_str(data.get("finished_at")), expires_at=_str(data.get("expires_at")), reason=_str(data.get("reason")),
         results_available=bool(data.get("results_available", False)), webhook=bool(data.get("webhook", False)),
         estimated_cost=_estimate(data.get("estimated_cost")), data_region=_str(data.get("data_region")),
-        delete_after=_str(data.get("delete_after")), raw=data,
+        delete_after=_str(data.get("delete_after")), results_deleted_at=_str(data.get("results_deleted_at")), raw=data,
     )
 
 
@@ -369,8 +371,9 @@ class Batches:
 
         Every submission carries an ``Idempotency-Key`` (``idempotency_key``, or a random one), the same on each retry.
         Pass your own and submit again with it after an error you are unsure about (a lost connection, a timeout): if
-        the first submission was stored, you get the same batch back instead of a second one. Lines need no key: each is
-        identified by its ``custom_id``."""
+        the first submission was stored, no second batch is made and ``IdempotencyKeyAlreadyUsedError`` is raised, its
+        ``batch_id`` naming the first batch (follow it with ``retrieve``). Lines need no key: each is identified by its
+        ``custom_id``."""
         from .client import idempotency_headers  # the client imports this module
 
         idem = idempotency_headers(idempotency_key)
@@ -401,8 +404,11 @@ class Batches:
     def stream_results(self, batch_id: str) -> Iterator[BatchResult]:
         """Every result line, read as it arrives: one per input line, in input order. Use this for large batches, so the
         whole file is never held in memory. The client's ``timeout`` covers the wait for the response and then each read.
-        Raises ``ConflictError`` (``type`` "batch_not_finished") until the batch has ended. The first collection starts
-        the retention clock."""
+        Raises ``ConflictError`` (``type`` "batch_not_finished") until the batch has ended.
+
+        Results can be downloaded once: they are deleted as soon as they have been sent in full, and results never
+        downloaded are deleted 24 hours after the batch finished. After that this raises ``BatchResultsDeletedError``
+        (410), so keep what you read."""
         path = _batch_path(batch_id) + "/results"
         resp = self._client._send("GET", path, key=self._client._resolve_key(), accept="application/jsonl", read=False)
         try:
@@ -427,7 +433,8 @@ class Batches:
             resp.close()  # also stops the download if the caller left the loop early
 
     def results(self, batch_id: str) -> List[BatchResult]:
-        """Every result line at once, in input order. For large batches prefer ``stream_results``."""
+        """Every result line at once, in input order. For large batches prefer ``stream_results``. Results can be
+        downloaded once (see ``stream_results``); a later call raises ``BatchResultsDeletedError``."""
         return list(self.stream_results(batch_id))
 
     def wait_for(

@@ -69,6 +69,51 @@ class ConflictError(InvalidRequestError):
     management API)."""
 
 
+class IdempotencyKeyAlreadyUsedError(ConflictError):
+    """409 "idempotency_key_already_used": a request with this ``Idempotency-Key`` was already answered. It is not
+    retried: the API does not store answers, so it cannot send the original answer again.
+
+    ``request_id`` is the id of the request that was answered (its ``X-Request-Id``), and ``batch_id`` the batch that a
+    batch submission created (follow it with ``client.batches.retrieve(batch_id)``). Nothing was billed for this
+    repeat. If you lost the answer, send the request again with a new ``idempotency_key`` (or none, for a random one):
+    it is then answered, and billed, as a new request."""
+
+    def __init__(self, message, status=409, body=None):
+        request_id = body.get("request_id") if isinstance(body, dict) else None
+        batch_id = body.get("batch_id") if isinstance(body, dict) else None
+        #: The id of the request that was answered, or None if the server did not say.
+        self.request_id: Optional[str] = request_id if isinstance(request_id, str) else None
+        #: For a batch submission, the id of the batch it created; otherwise None.
+        self.batch_id: Optional[str] = batch_id if isinstance(batch_id, str) else None
+        if self.batch_id:
+            hint = (f"this batch was already submitted as {self.batch_id}; follow it with "
+                    f"client.batches.retrieve({self.batch_id!r})")
+        else:
+            hint = ("this request was already answered"
+                    + (f" (request id {self.request_id})" if self.request_id else "")
+                    + ". The answer is not stored, so it cannot be sent again; if you lost it, send the request again "
+                    "with a new idempotency_key (it will be answered and billed again)")
+        super().__init__(hint, status, body)
+        #: The message as the server sent it.
+        self.server_message: str = message
+
+
+class BatchResultsDeletedError(InvalidRequestError):
+    """410 "batch_results_deleted": the batch's results are gone. Results are kept for one download: they are deleted
+    as soon as they have been sent in full, and results never downloaded are deleted 24 hours after the batch finished.
+    Save the results when you first download them. ``results_deleted_at`` says when they were deleted."""
+
+    def __init__(self, message, status=410, body=None):
+        at = body.get("results_deleted_at") if isinstance(body, dict) else None
+        #: When the results were deleted (ISO 8601), or None if the server did not say.
+        self.results_deleted_at: Optional[str] = at if isinstance(at, str) else None
+        super().__init__(
+            "this batch's results were deleted: results are kept for one download (deleted once sent in full) or, if "
+            "never downloaded, for 24 hours after the batch finished", status, body)
+        #: The message as the server sent it.
+        self.server_message: str = message
+
+
 class ValidationError(InvalidRequestError, ValueError):
     """Raised locally, before any request is sent, for malformed input."""
 
@@ -90,8 +135,13 @@ def error_for_status(status, message, body=None, retry_after=None) -> Launchable
         return PermissionDeniedError(message, status, body)
     if status == 404:
         return NotFoundError(message, status, body)
+    t = body.get("type") if isinstance(body, dict) else None
+    if status == 409 and t == "idempotency_key_already_used":
+        return IdempotencyKeyAlreadyUsedError(message, status, body)
     if status == 409:
         return ConflictError(message, status, body)
+    if status == 410 and t == "batch_results_deleted":
+        return BatchResultsDeletedError(message, status, body)
     if status == 429:
         return RateLimitError(message, status, body, retry_after)
     if 400 <= status < 500:

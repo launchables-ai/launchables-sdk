@@ -10,6 +10,7 @@ from launchables import (
     APIConnectionError, APIError, AuthenticationError, InvalidRequestError,
     Launchables, LaunchablesError, OutOfCreditError, PermissionDeniedError,
     RateLimitError, ValidationError, NotFoundError, ConflictError, DEFAULT_ADMIN_BASE_URL,
+    IdempotencyKeyAlreadyUsedError, BatchResultsDeletedError,
     choice, noul, score,
 )
 from launchables import client as client_module
@@ -342,7 +343,7 @@ class IdempotencyTests(Base):
         for _ in range(5):
             self.reply(409, busy, {"Retry-After": "2"})
         self.reply(503, {"error": "y"})
-        self.reply(200, self.ANSWER, {"Idempotent-Replayed": "true"})
+        self.reply(200, self.ANSWER)  # the first attempt failed, so this repeat is answered as a new request
         self.assertEqual(c.decide("s", {"q": noul("x")}).answers["q"].noul, 0.04)
         self.assertEqual(self.sleeps, [2.0] * 5 + [0.5])
         self.assertEqual(len(set(self.keys())), 1)
@@ -373,6 +374,57 @@ class IdempotencyTests(Base):
             self.client.decide("s", {"q": noul("x")}, idempotency_key="k1")
         self.assertEqual(cm.exception.type, "idempotency_key_reused")
         self.assertEqual(len(self.server.requests), 1)
+
+    USED = {"error": "this Idempotency-Key was already used for this request, which was answered; the answer is not "
+                     "kept, so read it from your own records, or send a new key to have the request answered (and "
+                     "billed) again", "type": "idempotency_key_already_used", "detail": ["header", "Idempotency-Key"],
+            "request_id": "req_0123456789abcdef"}
+
+    def test_already_used_after_a_lost_answer_is_raised_and_not_retried(self):
+        self.server.script.append("drop")  # the first attempt was answered, but the answer never arrived
+        self.reply(409, self.USED)
+        self.reply(200, self.ANSWER)  # never reached
+        with self.assertRaises(IdempotencyKeyAlreadyUsedError) as cm:
+            self.client.decide("s", {"q": noul("x")}, idempotency_key="order-4471")
+        e = cm.exception
+        self.assertIsInstance(e, ConflictError)  # existing ConflictError handlers still catch it
+        self.assertEqual(e.status, 409)
+        self.assertEqual(e.type, "idempotency_key_already_used")
+        self.assertEqual(e.request_id, "req_0123456789abcdef")
+        self.assertIsNone(e.batch_id)
+        self.assertIn("req_0123456789abcdef", e.message)
+        self.assertIn("new idempotency_key", e.message)
+        self.assertIn("billed again", e.message)
+        self.assertEqual(e.server_message, self.USED["error"])
+        self.assertEqual(len(self.server.requests), 2)
+        self.assertEqual(self.keys(), ["order-4471", "order-4471"])
+        self.assertEqual(self.sleeps, [0.5])  # only the wait after the lost connection
+
+    def test_already_used_after_waiting_out_in_progress_is_raised(self):
+        self.reply(409, {"error": "still being answered", "type": "idempotency_in_progress"}, {"Retry-After": "2"})
+        self.reply(409, self.USED)
+        with self.assertRaises(IdempotencyKeyAlreadyUsedError) as cm:
+            self.ask()
+        self.assertEqual(cm.exception.request_id, "req_0123456789abcdef")
+        self.assertEqual(self.sleeps, [2.0])
+        self.assertEqual(len(self.server.requests), 2)
+
+    def test_already_used_without_a_request_id_still_explains(self):
+        self.reply(409, {"error": "used", "type": "idempotency_key_already_used", "request_id": None})
+        with self.assertRaises(IdempotencyKeyAlreadyUsedError) as cm:
+            self.ask()
+        self.assertIsNone(cm.exception.request_id)
+        self.assertIn("new idempotency_key", str(cm.exception))
+
+    def test_other_conflicts_and_gone_stay_as_they_were(self):
+        self.reply(409, {"error": "key limit", "type": "key_limit"})
+        with self.assertRaises(ConflictError) as cm:
+            self.ask()
+        self.assertNotIsInstance(cm.exception, IdempotencyKeyAlreadyUsedError)
+        self.reply(410, {"error": "gone"})
+        with self.assertRaises(InvalidRequestError) as cm:
+            self.ask()
+        self.assertNotIsInstance(cm.exception, BatchResultsDeletedError)
 
     def test_other_requests_carry_no_key(self):
         self.reply(200, {"data": []})

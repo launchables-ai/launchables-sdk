@@ -68,8 +68,10 @@ export interface Batch {
     webhook: boolean;
     estimated_cost: BatchCostEstimate;
     data_region: string;
-    /** When the batch and its results are deleted; null while it runs. */
+    /** When the batch and its results are deleted at the latest; null while it runs. */
     delete_after: string | null;
+    /** When the results were deleted (downloaded once, or 24 hours passed); null or absent while they are kept. */
+    results_deleted_at?: string | null;
 }
 interface BatchResultBase {
     custom_id: string | null;
@@ -113,8 +115,9 @@ export interface CreateBatchOptions {
     /**
      * Identifies this submission (1 to 255 printable ASCII characters); a random one is made when it is not given, and
      * the same key goes with every retry. Pass your own and submit again with it after an error you are unsure about (a
-     * lost connection, a timeout): if the first submission was stored, you get the same batch back instead of a second
-     * one. Lines need no key: each is identified by its `custom_id`.
+     * lost connection, a timeout): if the first submission was stored, no second batch is made and
+     * `IdempotencyKeyAlreadyUsedError` is thrown, its `batchId` naming the first batch (follow it with `retrieve`). Lines
+     * need no key: each is identified by its `custom_id`.
      */
     idempotencyKey?: string;
 }
@@ -172,11 +175,17 @@ export declare class Batches {
     cancel(id: string): Promise<Batch>;
     /**
      * Every result line, read as it arrives: one per input line, in input order. Use this for large batches, so the whole
-     * file is never held in memory. Throws `ConflictError` (`type` "batch_not_finished") until the batch has ended. The first
-     * collection starts the retention clock.
+     * file is never held in memory. Throws `ConflictError` (`type` "batch_not_finished") until the batch has ended.
+     *
+     * Results can be downloaded once: they are deleted as soon as they have been sent in full, and results never downloaded
+     * are deleted 24 hours after the batch finished. After that this throws `BatchResultsDeletedError` (410), so keep what
+     * you read.
      */
     streamResults<Q extends Questions = Questions>(id: string): AsyncGenerator<BatchResult<Q>>;
-    /** Every result line at once, in input order. For large batches prefer `streamResults`. */
+    /**
+     * Every result line at once, in input order. For large batches prefer `streamResults`. Results can be downloaded once
+     * (see `streamResults`); a later call throws `BatchResultsDeletedError`.
+     */
     results<Q extends Questions = Questions>(id: string): Promise<BatchResult<Q>[]>;
     /**
      * Polls the batch until it has ended and its results can be collected, waiting longer between checks each time

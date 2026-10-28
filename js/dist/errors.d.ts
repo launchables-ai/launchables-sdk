@@ -41,6 +41,32 @@ export declare class NotFoundError extends InvalidRequestError {
 /** 409: the change conflicts with the organisation's state, e.g. its key limit or an archived workspace (key management API). */
 export declare class ConflictError extends InvalidRequestError {
 }
+/**
+ * 409 "idempotency_key_already_used": a request with this `Idempotency-Key` was already answered. It is not retried: the
+ * API does not store answers, so it cannot send the original answer again.
+ *
+ * `requestId` is the id of the request that was answered (its `X-Request-Id`), and `batchId` the batch that a batch
+ * submission created (follow it with `client.batches.retrieve(batchId)`). Nothing was billed for this repeat. If you
+ * lost the answer, send the request again with a new `idempotencyKey` (or none, for a random one): it is then answered,
+ * and billed, as a new request.
+ */
+export declare class IdempotencyKeyAlreadyUsedError extends ConflictError {
+    /** The id of the request that was answered, or null if the server did not say. */
+    readonly requestId: string | null;
+    /** For a batch submission, the id of the batch it created; otherwise null. */
+    readonly batchId: string | null;
+    constructor(message: string, status?: number, body?: unknown);
+}
+/**
+ * 410 "batch_results_deleted": the batch's results are gone. Results are kept for one download: they are deleted as soon
+ * as they have been sent in full, and results never downloaded are deleted 24 hours after the batch finished. Save the
+ * results when you first download them. `resultsDeletedAt` says when they were deleted.
+ */
+export declare class BatchResultsDeletedError extends InvalidRequestError {
+    /** When the results were deleted (ISO 8601), or null if the server did not say. */
+    readonly resultsDeletedAt: string | null;
+    constructor(message: string, status?: number, body?: unknown);
+}
 /** Thrown locally, before any request is sent, for malformed input. */
 export declare class ValidationError extends InvalidRequestError {
 }

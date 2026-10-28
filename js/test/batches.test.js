@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   Launchables, noul, choice, NoulAnswer, toJSONL, BatchTimeoutError,
   APIError, APIConnectionError, ConflictError, InvalidRequestError, NotFoundError, RateLimitError, ValidationError,
+  IdempotencyKeyAlreadyUsedError, BatchResultsDeletedError,
 } from "../dist/index.js";
 
 const ID = "batch_0123456789abcdef01234567";
@@ -225,6 +226,38 @@ test("a results file without a final newline still gives its last line", async (
   assert.equal((await client.batches.results(ID)).length, 1);
 });
 
+const DELETED = {
+  error: "this batch's results were deleted: results are deleted as soon as they have been downloaded once, and at the " +
+    "latest 24 hours after the batch finished",
+  type: "batch_results_deleted", results_deleted_at: "2026-10-28T09:00:00+00:00",
+};
+
+test("results already downloaded are gone (BatchResultsDeletedError) and not retried", async () => {
+  const jsonl = [ANSWERED, EXPIRED].map((r) => JSON.stringify(r) + "\n").join("");
+  const { client, calls, sleeps } = setup([[200, jsonl], [410, DELETED], [410, DELETED]]);
+  assert.equal((await client.batches.results(ID)).length, 2);
+  const check = (e) => {
+    assert.ok(e instanceof BatchResultsDeletedError);
+    assert.ok(e instanceof InvalidRequestError);
+    assert.equal(e.status, 410);
+    assert.equal(e.type, "batch_results_deleted");
+    assert.equal(e.resultsDeletedAt, "2026-10-28T09:00:00+00:00");
+    assert.match(e.message, /one download/);
+    assert.match(e.message, /24 hours/);
+    assert.equal(e.serverMessage, DELETED.error);
+    return true;
+  };
+  await assert.rejects(client.batches.results(ID), check);
+  await assert.rejects((async () => { for await (const _ of client.batches.streamResults(ID)) { /* none */ } })(), check);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(sleeps, []);
+});
+
+test("a status says when the results were deleted", async () => {
+  const { client } = setup([[200, { ...status("done", { done: 2, failed: 0, pending: 0 }), results_available: false, results_deleted_at: "2026-10-28T09:00:00+00:00" }]]);
+  assert.equal((await client.batches.retrieve(ID)).results_deleted_at, "2026-10-28T09:00:00+00:00");
+});
+
 test("results before the batch ends is a ConflictError (batch_not_finished)", async () => {
   const { client } = setup([[409, { error: "the batch is running; results are ready once it is done", type: "batch_not_finished" }]]);
   await assert.rejects(client.batches.results(ID), (e) => e instanceof ConflictError && e.type === "batch_not_finished");
@@ -382,11 +415,27 @@ test("create sends one Idempotency-Key on every retry, or the caller's own", asy
   await assert.rejects(client.batches.create([line("a")], { idempotencyKey: "" }), ValidationError);
 });
 
-test("create waits out a submission still in progress and gets the same batch", async () => {
+test("create waits out a submission still in progress", async () => {
   const { client, sleeps } = setup([
     [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "2" }],
-    [200, CREATED, { "Idempotent-Replayed": "true" }],
+    [200, CREATED], // the first attempt was refused, so this one is stored
   ]);
   assert.equal((await client.batches.create([line("a")], { idempotencyKey: "b-1" })).id, ID);
+  assert.deepEqual(sleeps, [2000]);
+});
+
+test("a submission already stored names its batch and is not retried", async () => {
+  const { client, calls, sleeps } = setup([
+    [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "2" }],
+    [409, { error: "already used", type: "idempotency_key_already_used", request_id: "req_0123456789abcdef", batch_id: ID }],
+  ]);
+  await assert.rejects(client.batches.create([line("a")], { idempotencyKey: "b-1" }), (e) => {
+    assert.ok(e instanceof IdempotencyKeyAlreadyUsedError);
+    assert.equal(e.batchId, ID);
+    assert.equal(e.requestId, "req_0123456789abcdef");
+    assert.ok(e.message.includes(ID) && e.message.includes("retrieve"));
+    return true;
+  });
+  assert.equal(calls.length, 2);
   assert.deepEqual(sleeps, [2000]);
 });

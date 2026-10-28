@@ -141,8 +141,11 @@ export class Batches {
     }
     /**
      * Every result line, read as it arrives: one per input line, in input order. Use this for large batches, so the whole
-     * file is never held in memory. Throws `ConflictError` (`type` "batch_not_finished") until the batch has ended. The first
-     * collection starts the retention clock.
+     * file is never held in memory. Throws `ConflictError` (`type` "batch_not_finished") until the batch has ended.
+     *
+     * Results can be downloaded once: they are deleted as soon as they have been sent in full, and results never downloaded
+     * are deleted 24 hours after the batch finished. After that this throws `BatchResultsDeletedError` (410), so keep what
+     * you read.
      */
     async *streamResults(id) {
         for await (const line of this.t.lines(`${batchPath(id)}/results`)) {
@@ -159,7 +162,10 @@ export class Batches {
             yield parseResult(data);
         }
     }
-    /** Every result line at once, in input order. For large batches prefer `streamResults`. */
+    /**
+     * Every result line at once, in input order. For large batches prefer `streamResults`. Results can be downloaded once
+     * (see `streamResults`); a later call throws `BatchResultsDeletedError`.
+     */
     async results(id) {
         const out = [];
         for await (const r of this.streamResults(id))

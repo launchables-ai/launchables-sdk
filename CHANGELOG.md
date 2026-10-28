@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The API no longer keeps a copy of a live answer once it has been sent, so a repeated request is no longer answered with the original answer. A repeat of a request that was already answered, with the same `Idempotency-Key`, is refused with 409 `idempotency_key_already_used`: nothing is answered or billed again. The clients now raise `IdempotencyKeyAlreadyUsedError` for it (a subclass of `ConflictError`, so existing handlers still catch it) and never retry it. It carries the answered request's id (`request_id` in Python, `requestId` in JavaScript) and, for a batch submission, the batch that was created (`batch_id` / `batchId`; follow it with `batches.retrieve`). If an answer was lost, send the request again with a new key; it is then answered, and billed, as a new request. This can also follow a lost connection or a wait on `idempotency_in_progress`, where the retry used to return the original answer.
+- Batch results can be downloaded once. They are deleted as soon as they have been sent in full, and results never downloaded are deleted 24 hours after the batch finished. A later `results` or `stream_results` / `streamResults` call raises `BatchResultsDeletedError` (410 `batch_results_deleted`, a subclass of `InvalidRequestError`), which says when the results were deleted (`results_deleted_at` / `resultsDeletedAt`). A batch's status has a new `results_deleted_at` field.
+- For these two errors the error message is the client's explanation of what to do next; the server's own message is kept in `server_message` (Python) and `serverMessage` (JavaScript).
+- The READMEs no longer describe replayed answers.
+
 ## 0.7.0
 
 - Retries are never billed twice. Every `decide` call and batch submission now sends an `Idempotency-Key` header, a random UUID per call, the same on every retry of that call, so a request the API already answered (but whose answer was lost to a timeout or a dropped connection) is returned again instead of answered and billed a second time. Pass your own key with `idempotency_key` (Python) or `idempotencyKey` (JavaScript) to make a request safe to repeat across restarts; a key is 1 to 255 printable ASCII characters.

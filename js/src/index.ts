@@ -13,6 +13,8 @@ export {
   InvalidRequestError,
   NotFoundError,
   ConflictError,
+  IdempotencyKeyAlreadyUsedError,
+  BatchResultsDeletedError,
   ValidationError,
   APIError,
   APIConnectionError,

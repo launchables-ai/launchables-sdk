@@ -5,6 +5,7 @@ import {
   Launchables, noul, choice, score, NoulAnswer, VERSION,
   LaunchablesError, AuthenticationError, OutOfCreditError, PermissionDeniedError, RateLimitError,
   InvalidRequestError, ValidationError, APIError, APIConnectionError, NotFoundError, ConflictError, DEFAULT_ADMIN_BASE_URL,
+  IdempotencyKeyAlreadyUsedError, BatchResultsDeletedError,
   imageFromBytes, imageFromPath, detectImageFormat, MAX_IMAGE_BYTES,
 } from "../dist/index.js";
 
@@ -624,7 +625,7 @@ test("idempotency: a caller's own key is sent, and a bad one is refused before s
 test("idempotency: in progress is waited out without using up retries", async () => {
   const busy = [409, { error: "still being answered", type: "idempotency_in_progress", retry_after: 2 }, { "Retry-After": "2" }];
   const { client, calls, sleeps } = setup(
-    [busy, busy, busy, busy, busy, [503, { error: "y" }], [200, { model: "m", answers: { q: NOUL } }, { "Idempotent-Replayed": "true" }]],
+    [busy, busy, busy, busy, busy, [503, { error: "y" }], [200, { model: "m", answers: { q: NOUL } }]], // the first attempt failed, so this is answered anew
     { maxRetries: 1 },
   );
   assert.equal((await ask(client)).answers.q.noul, 0.04);
@@ -647,6 +648,58 @@ test("idempotency: Retry-After 0 on in progress still ends at the wait limit", a
   assert.ok(sleeps.every((ms) => ms === 250), "each wait is at least 250 ms");
   assert.equal(sleeps.length, 600); // 600 x 250 ms = 150 s
   assert.equal(calls.length, 601);
+});
+
+const USED = {
+  error: "this Idempotency-Key was already used for this request, which was answered; the answer is not kept, so read it " +
+    "from your own records, or send a new key to have the request answered (and billed) again",
+  type: "idempotency_key_already_used", detail: ["header", "Idempotency-Key"], request_id: "req_0123456789abcdef",
+};
+
+test("idempotency: already used after a lost answer is thrown, typed, and not retried", async () => {
+  const { client, calls, sleeps } = setup([
+    new TypeError("fetch failed"), // the first attempt was answered, but the answer never arrived
+    [409, USED],
+    [200, { model: "m", answers: { q: NOUL } }], // never reached
+  ]);
+  await assert.rejects(client.decide("s", { q: noul("x") }, { idempotencyKey: "order-4471" }), (e) => {
+    assert.ok(e instanceof IdempotencyKeyAlreadyUsedError);
+    assert.ok(e instanceof ConflictError); // existing ConflictError handlers still catch it
+    assert.equal(e.status, 409);
+    assert.equal(e.type, "idempotency_key_already_used");
+    assert.equal(e.requestId, "req_0123456789abcdef");
+    assert.equal(e.batchId, null);
+    assert.match(e.message, /req_0123456789abcdef/);
+    assert.match(e.message, /new idempotencyKey/);
+    assert.match(e.message, /billed again/);
+    assert.equal(e.serverMessage, USED.error);
+    assert.equal(e.name, "IdempotencyKeyAlreadyUsedError");
+    return true;
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(keysOf(calls), ["order-4471", "order-4471"]);
+  assert.deepEqual(sleeps, [500]); // only the wait after the lost connection
+});
+
+test("idempotency: already used after waiting out in progress is thrown", async () => {
+  const { client, calls, sleeps } = setup([
+    [409, { error: "still being answered", type: "idempotency_in_progress" }, { "Retry-After": "2" }],
+    [409, USED],
+  ]);
+  await assert.rejects(ask(client), (e) => e instanceof IdempotencyKeyAlreadyUsedError && e.requestId === "req_0123456789abcdef");
+  assert.deepEqual(sleeps, [2000]);
+  assert.equal(calls.length, 2);
+});
+
+test("idempotency: other conflicts and other 410s keep their old classes", async () => {
+  const { client } = setup([
+    [409, { error: "key limit", type: "key_limit" }],
+    [410, { error: "gone" }],
+    [409, { error: "used", type: "idempotency_key_already_used", request_id: null }],
+  ]);
+  await assert.rejects(ask(client), (e) => e instanceof ConflictError && !(e instanceof IdempotencyKeyAlreadyUsedError));
+  await assert.rejects(ask(client), (e) => e instanceof InvalidRequestError && !(e instanceof BatchResultsDeletedError));
+  await assert.rejects(ask(client), (e) => e instanceof IdempotencyKeyAlreadyUsedError && e.requestId === null && /new idempotencyKey/.test(e.message));
 });
 
 test("idempotency: a reused key is raised at once; other requests carry no key", async () => {
