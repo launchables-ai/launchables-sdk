@@ -42,8 +42,8 @@ def counts(done, failed, pending):
     return {"done": done, "failed": failed, "pending": pending}
 
 
-ANSWERED = {"custom_id": "a", "model": "myles-g-12b-20261017", "status": 200,
-            "response": {"model": "myles-g-12b-20261017", "answers": {"refund": {"type": "noul", "noul": 0.97}},
+ANSWERED = {"custom_id": "a", "model": "myles-g-12b-20261029", "status": 200,
+            "response": {"model": "myles-g-12b-20261029", "answers": {"refund": {"type": "noul", "noul": 0.97}},
                          "usage": {"input_tokens": 120, "output_tokens": 1}},
             "usage": {"input_tokens": 120, "output_tokens": 1, "batch": True}}
 EXPIRED = {"custom_id": "b", "model": "myles-g-12b", "status": None,
@@ -325,7 +325,7 @@ class ResultsTests(Base):
         self.assertEqual(req["headers"]["Accept"], "application/jsonl")
         self.assertIsInstance(a, AnsweredBatchResult)
         self.assertTrue(a.ok)
-        self.assertEqual((a.custom_id, a.status, a.model), ("a", 200, "myles-g-12b-20261017"))
+        self.assertEqual((a.custom_id, a.status, a.model), ("a", 200, "myles-g-12b-20261029"))
         self.assertIsInstance(a.response.answers["refund"], NoulAnswer)
         self.assertEqual(a.response.answers["refund"].decide(), "yes")
         self.assertEqual((a.usage.input_tokens, a.usage.output_tokens, a.usage.batch), (120, 1, True))
