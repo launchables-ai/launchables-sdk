@@ -42,8 +42,8 @@ const status = (s, counts, lines = 2) => ({
   data_region: "Canada", delete_after: null,
 });
 const ANSWERED = {
-  custom_id: "a", model: "myles-g-12b-20261017", status: 200,
-  response: { model: "myles-g-12b-20261017", answers: { refund: { type: "noul", noul: 0.97 } }, usage: { input_tokens: 120, output_tokens: 1 } },
+  custom_id: "a", model: "myles-g-12b-20261029", status: 200,
+  response: { model: "myles-g-12b-20261029", answers: { refund: { type: "noul", noul: 0.97 } }, usage: { input_tokens: 120, output_tokens: 1 } },
   usage: { input_tokens: 120, output_tokens: 1, batch: true },
 };
 const EXPIRED = {
